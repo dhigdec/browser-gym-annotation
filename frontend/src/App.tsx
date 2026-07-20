@@ -1,8 +1,5 @@
-// Placeholder — replaced by the Task Review screen in the feature build.
+import { TaskReview } from "./features/task-review/TaskReview";
+
 export function App() {
-  return (
-    <div style={{ padding: 24, fontFamily: "var(--font-primary)" }}>
-      Task Review — scaffolding.
-    </div>
-  );
+  return <TaskReview />;
 }
