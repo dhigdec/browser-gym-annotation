@@ -109,6 +109,7 @@ function ReviewScreen({ data }: { data: ReviewData }) {
           onGenerate={() => dispatch({ t: "generate" })}
           onSetLevel={(l) => dispatch({ t: "setLevel", level: l })}
           onAddVerifier={onAddVerifier}
+          onEditVerifier={(id, assertion, code) => dispatch({ t: "editVerifier", id, assertion, code })}
           onOverride={(id) => dispatch({ t: "override", id })}
           onRun={() => dispatch({ t: "runBenchmark" })}
           onSubmit={() => dispatch({ t: "submit" })}

@@ -25,7 +25,13 @@ export function makeInitialState(data: ReviewData): ReviewState {
     overrides: {},
     activeLevel: "ui",
     added: [],
+    edits: {},
   };
+}
+
+/** An empty or placeholder check never passes. */
+export function isPlaceholder(code: string): boolean {
+  return !code.trim() || code.includes("/* define check */");
 }
 
 export type Action =
@@ -41,6 +47,7 @@ export type Action =
   | { t: "setLevel"; level: VerifierLevel }
   | { t: "addVerifier"; verifier: Verifier }
   | { t: "removeVerifier"; id: string }
+  | { t: "editVerifier"; id: string; assertion: string; code: string }
   | { t: "override"; id: string }
   | { t: "submit" };
 
@@ -86,6 +93,8 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
       return { ...s, added: [...s.added, a.verifier], benchmarkRun: false, submitted: false };
     case "removeVerifier":
       return { ...s, added: s.added.filter((v) => v.id !== a.id), benchmarkRun: false };
+    case "editVerifier":
+      return { ...s, edits: { ...s.edits, [a.id]: { assertion: a.assertion, code: a.code } }, benchmarkRun: false, submitted: false };
     case "override":
       return { ...s, overrides: { ...s.overrides, [a.id]: true }, submitted: false };
     case "submit":
@@ -111,7 +120,10 @@ export function runSummary(s: ReviewState): Metric[] {
 }
 
 export function allVerifiers(s: ReviewState): Verifier[] {
-  return [...s.data.verifiers, ...s.added];
+  return [...s.data.verifiers, ...s.added].map((v) => {
+    const e = s.edits[v.id];
+    return e ? { ...v, assertion: e.assertion, code: e.code, placeholder: isPlaceholder(e.code) } : v;
+  });
 }
 
 export function verifierState(s: ReviewState, v: Verifier): MeterState {

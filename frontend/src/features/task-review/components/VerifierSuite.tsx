@@ -49,7 +49,27 @@ function EmptyState({ unlocked, onGenerate }: { unlocked: boolean; onGenerate: (
   );
 }
 
-function VerifierRow({ v, state, benchmarkRun, onOverride }: { v: Verifier; state: ReviewState; benchmarkRun: boolean; onOverride: (id: string) => void }) {
+function VerifierRow({ v, state, benchmarkRun, onOverride, onEdit }: { v: Verifier; state: ReviewState; benchmarkRun: boolean; onOverride: (id: string) => void; onEdit: (id: string, assertion: string, code: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [assertion, setAssertion] = useState(v.assertion);
+  const [code, setCode] = useState(v.code);
+
+  const startEdit = () => { setAssertion(v.assertion); setCode(v.code); setEditing(true); };
+  const inputStyle = { width: "100%", boxSizing: "border-box" as const, padding: "9px 12px", borderRadius: t.radiusLg, border: `1px solid ${t.primary6}`, fontFamily: t.fontPrimary, fontSize: "0.875rem", color: t.n0, outline: "none" };
+
+  if (editing) {
+    return (
+      <div style={{ padding: "14px 18px", borderTop: `1px solid ${t.n7}`, display: "flex", flexDirection: "column", gap: 10 }}>
+        <input value={assertion} onChange={(e) => setAssertion(e.target.value)} style={inputStyle} />
+        <textarea value={code} onChange={(e) => setCode(e.target.value)} rows={2} style={{ ...inputStyle, fontFamily: t.fontMono, background: t.n85, border: `1px solid ${t.n7}`, resize: "vertical" }} />
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+          <Button variant="secondary" onClick={() => setEditing(false)}>Cancel</Button>
+          <Button onClick={() => { onEdit(v.id, assertion || v.assertion, code); setEditing(false); }}>Save</Button>
+        </div>
+      </div>
+    );
+  }
+
   const vs = verifierState(state, v);
   const meterState = benchmarkRun ? vs : "pending";
   return (
@@ -65,7 +85,9 @@ function VerifierRow({ v, state, benchmarkRun, onOverride }: { v: Verifier; stat
         <Tag tone="tinted" color={t.yellow} style={{ fontSize: "0.68rem" }}>overridden</Tag>
       )}
       <Meter state={meterState} />
-      <Icon name="pencil" size={15} color={t.n3} style={{ cursor: "pointer" }} />
+      <span onClick={startEdit} style={{ cursor: "pointer", display: "inline-flex" }} title="Edit check">
+        <Icon name="pencil" size={15} color={t.n3} />
+      </span>
     </div>
   );
 }
@@ -92,6 +114,7 @@ export function VerifierSuite({
   onGenerate,
   onSetLevel,
   onAddVerifier,
+  onEditVerifier,
   onOverride,
   onRun,
   onSubmit,
@@ -100,6 +123,7 @@ export function VerifierSuite({
   onGenerate: () => void;
   onSetLevel: (l: VerifierLevel) => void;
   onAddVerifier: (assertion: string, code: string) => void;
+  onEditVerifier: (id: string, assertion: string, code: string) => void;
   onOverride: (id: string) => void;
   onRun: () => void;
   onSubmit: () => void;
@@ -146,7 +170,7 @@ export function VerifierSuite({
           </div>
 
           {group.map((v) => (
-            <VerifierRow key={v.id} v={v} state={state} benchmarkRun={state.benchmarkRun} onOverride={onOverride} />
+            <VerifierRow key={v.id} v={v} state={state} benchmarkRun={state.benchmarkRun} onOverride={onOverride} onEdit={onEditVerifier} />
           ))}
 
           {adding ? (

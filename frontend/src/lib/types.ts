@@ -101,4 +101,6 @@ export interface ReviewState {
   overrides: Record<string, boolean>;
   activeLevel: VerifierLevel;
   added: Verifier[];
+  /** in-place edits to any verifier (generated or added), keyed by id. */
+  edits: Record<string, { assertion: string; code: string }>;
 }
