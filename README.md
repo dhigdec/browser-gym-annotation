@@ -33,7 +33,9 @@ infra/        docker-compose etc. (M2+)
 docs/         build plan, exact design spec, DS notes, feasibility, ADRs
 ```
 
-## Run (frontend)
+## Run
+
+**Frontend (the M1 screen):**
 ```bash
 cd frontend
 npm install
@@ -41,6 +43,26 @@ npm run dev      # http://localhost:5180  (fixed 1440px design)
 npm run lint     # oxlint DS adherence
 npm run build    # tsc + vite build
 ```
+
+**Backend (FastAPI + your local Postgres):**
+```bash
+cd backend
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+createdb browser_gym_annotator      # once
+uvicorn app.main:app --port 8090 --reload
+# → /health  /api/tasks  /api/tasks/GYM-2041/review   (schema auto-created)
+```
+
+**Full stack (Docker):**
+```bash
+cp .env.example .env
+docker compose -f infra/docker-compose.yml up --build
+# frontend :8080 · backend :8090 · postgres :5433 · adminer :8081
+```
+
+## Prerequisites
+Node 20+, Python 3.12, Postgres 16/17 (native or via Docker), Docker (optional, for the full stack).
 
 ## Design fidelity notes
 - Consumes the Deccan Vault tokens verbatim; primitives re-implemented from spec
