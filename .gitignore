@@ -23,3 +23,6 @@ artifacts/
 *.log
 .idea/
 .vscode/
+
+# python build artifacts
+*.egg-info/
