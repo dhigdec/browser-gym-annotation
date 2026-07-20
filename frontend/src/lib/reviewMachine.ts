@@ -1,32 +1,32 @@
 import type { MeterState } from "../ds/Meter";
-import type { Metric, ReviewState, Step, Verifier } from "./types";
-import { STEPS, TASK, generateVerifierSuite } from "../fixtures/task";
 import type { VerifierLevel } from "../ds/tokens";
+import type { Metric, ReviewData, ReviewState, Step, Verifier } from "./types";
 
-/** Steps 13–15 after the reviewer corrects the corporate-card step. */
-const CORRECTED_TAIL: Step[] = [
-  { idx: 13, type: "navigate", tabId: "shop", description: "Paid with the personal PayPal" },
-  { idx: 14, type: "submit", tabId: "shop", description: "Order placed · confirmation #SG8842" },
-  { idx: 15, type: "tab", tabId: "mail", description: "Emailed the total in ShopMail" },
-];
+function errorIndex(steps: Step[]): number {
+  const i = steps.findIndex((s) => s.type === "error");
+  return i >= 0 ? i : Math.max(0, steps.length - 1);
+}
 
-export const TOTAL_STEPS = STEPS.length; // 15
-const INITIAL_VERIFIED = 11; // parked mid-review on the error step, like the design
-
-export const initialState: ReviewState = {
-  step: 11, // 0-based → display step 12 (the ERROR)
-  activeTabId: STEPS[11].tabId,
-  playing: false,
-  verifiedThrough: INITIAL_VERIFIED,
-  stepsApproved: false,
-  verifiersGenerated: false,
-  benchmarkRun: false,
-  submitted: false,
-  rerunFrom: null,
-  overrides: {},
-  activeLevel: "ui",
-  added: [],
-};
+/** Seed the review state from a loaded payload — parked on the error step,
+ *  with the steps before it already reviewed (mirrors the design). */
+export function makeInitialState(data: ReviewData): ReviewState {
+  const ei = errorIndex(data.steps);
+  return {
+    data,
+    step: ei,
+    activeTabId: data.steps[ei]?.tabId ?? data.tabs[0]?.id ?? "",
+    playing: false,
+    verifiedThrough: ei,
+    stepsApproved: false,
+    verifiersGenerated: false,
+    benchmarkRun: false,
+    submitted: false,
+    rerunFrom: null,
+    overrides: {},
+    activeLevel: "ui",
+    added: [],
+  };
+}
 
 export type Action =
   | { t: "stepTo"; i: number }
@@ -45,48 +45,40 @@ export type Action =
   | { t: "submit" };
 
 export function reducer(s: ReviewState, a: Action): ReviewState {
+  const steps = visibleSteps(s);
+  const total = steps.length;
   switch (a.t) {
     case "stepTo":
-      return { ...s, step: a.i, activeTabId: visibleSteps(s)[a.i]?.tabId ?? s.activeTabId, playing: false };
+      return { ...s, step: a.i, activeTabId: steps[a.i]?.tabId ?? s.activeTabId, playing: false };
     case "playToggle":
       return { ...s, playing: !s.playing };
     case "tick": {
-      const next = Math.min(s.step + 1, TOTAL_STEPS - 1);
-      const playing = next < TOTAL_STEPS - 1;
-      return { ...s, step: next, activeTabId: visibleSteps(s)[next]?.tabId ?? s.activeTabId, playing };
+      const next = Math.min(s.step + 1, total - 1);
+      return { ...s, step: next, activeTabId: steps[next]?.tabId ?? s.activeTabId, playing: next < total - 1 };
     }
     case "selectTab":
       return { ...s, activeTabId: a.id };
     case "verifyStep": {
       const verifiedThrough = Math.max(s.verifiedThrough, s.step + 1);
-      const step = Math.min(s.step + 1, TOTAL_STEPS - 1);
-      return {
-        ...s,
-        verifiedThrough,
-        step,
-        activeTabId: visibleSteps(s)[step]?.tabId ?? s.activeTabId,
-        stepsApproved: verifiedThrough >= TOTAL_STEPS,
-      };
+      const step = Math.min(s.step + 1, total - 1);
+      return { ...s, verifiedThrough, step, activeTabId: steps[step]?.tabId ?? s.activeTabId, stepsApproved: verifiedThrough >= total };
     }
     case "approveRemaining":
-      return { ...s, verifiedThrough: TOTAL_STEPS, stepsApproved: true };
+      return { ...s, verifiedThrough: total, stepsApproved: true };
     case "generate":
       return s.stepsApproved ? { ...s, verifiersGenerated: true, benchmarkRun: false } : s;
     case "runBenchmark":
       return s.verifiersGenerated ? { ...s, benchmarkRun: true } : s;
     case "correctAndRerun":
-      // Correct the trace from `fromStep` and re-run the agent from that state.
-      // The re-run trace is auto-approved; the verifier suite must be re-run
-      // because the end-state changed. (Cleaner than the prototype's full reset.)
       return {
         ...s,
         rerunFrom: a.fromStep,
-        verifiedThrough: TOTAL_STEPS,
+        verifiedThrough: total,
         stepsApproved: true,
         benchmarkRun: false,
         overrides: {},
         submitted: false,
-        step: fromStepIndex(a.fromStep),
+        step: a.fromStep - 1,
       };
     case "setLevel":
       return { ...s, activeLevel: a.level };
@@ -103,32 +95,28 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
   }
 }
 
-const fromStepIndex = (display: number) => display - 1;
-
 // ---- selectors -------------------------------------------------------------
 
-/** The trace shown — base, or the corrected tail after a re-run. */
 export function visibleSteps(s: ReviewState): Step[] {
-  if (s.rerunFrom == null) return STEPS;
-  return [...STEPS.slice(0, 12), ...CORRECTED_TAIL];
+  if (s.rerunFrom == null) return s.data.steps;
+  const ei = errorIndex(s.data.steps);
+  return [...s.data.steps.slice(0, ei + 1), ...s.data.correctedTail];
 }
 
 export function runSummary(s: ReviewState): Metric[] {
-  if (s.rerunFrom == null) return TASK.runSummary;
-  return TASK.runSummary.map((m) =>
+  if (s.rerunFrom == null) return s.data.task.runSummary;
+  return s.data.task.runSummary.map((m) =>
     m.label === "Errors" ? { value: "0", label: "Errors (resolved)", tone: "success" } : m,
   );
 }
 
 export function allVerifiers(s: ReviewState): Verifier[] {
-  return [...generateVerifierSuite(), ...s.added];
+  return [...s.data.verifiers, ...s.added];
 }
 
-/** Per-verifier score state given the current review state. */
 export function verifierState(s: ReviewState, v: Verifier): MeterState {
   if (!s.benchmarkRun) return "pending";
-  // Rule: an empty/placeholder check never passes.
-  if (v.placeholder) return "fail";
+  if (v.placeholder) return "fail"; // empty/placeholder never passes
   if (v.failsUntilCorrected && s.rerunFrom == null && !s.overrides[v.id]) return "fail";
   return "pass";
 }

@@ -1,21 +1,16 @@
 import { useEffect, useReducer, useState, type ReactNode } from "react";
-import { t, weight } from "../../ds";
-import { TABS, TASK, CORRECTION_SEED } from "../../fixtures/task";
-import type { Verifier } from "../../lib/types";
-import {
-  initialState,
-  reducer,
-  runSummary,
-  visibleSteps,
-  TOTAL_STEPS,
-} from "../../lib/reviewMachine";
+import { Button, t, weight } from "../../ds";
+import { fetchReview } from "../../lib/api";
+import type { ReviewData, Verifier } from "../../lib/types";
+import { makeInitialState, reducer, runSummary, visibleSteps } from "../../lib/reviewMachine";
 import { Header } from "./components/Header";
 import { ReplayPane } from "./components/ReplayPane";
 import { Scrubber } from "./components/Scrubber";
 import { ActionTrace } from "./components/ActionTrace";
 import { RightPanel } from "./components/RightPanel";
 import { VerifierSuite } from "./components/VerifierSuite";
-import { Button } from "../../ds";
+
+const TASK_ID = "GYM-2041";
 
 function SectionHeader({ n, title, subtitle, done }: { n: number; title: string; subtitle: string; done?: boolean }) {
   const active = n === 1 || done;
@@ -28,8 +23,8 @@ function SectionHeader({ n, title, subtitle, done }: { n: number; title: string;
   );
 }
 
-function CorrectModal({ onCancel, onSave }: { onCancel: () => void; onSave: (text: string) => void }) {
-  const [text, setText] = useState(CORRECTION_SEED);
+function CorrectModal({ seed, onCancel, onSave }: { seed: string; onCancel: () => void; onSave: () => void }) {
+  const [text, setText] = useState(seed);
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(13,13,13,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 40 }} onClick={onCancel}>
       <div onClick={(e) => e.stopPropagation()} style={{ width: 560, background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, padding: 22 }}>
@@ -39,7 +34,7 @@ function CorrectModal({ onCancel, onSave }: { onCancel: () => void; onSave: (tex
         <div style={{ marginTop: 8, fontSize: "0.72rem", color: t.n3 }}>Steps after this point are discarded and re-generated.</div>
         <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end", gap: 10 }}>
           <Button variant="secondary" onClick={onCancel}>Cancel</Button>
-          <Button onClick={() => onSave(text)}>Save &amp; re-run</Button>
+          <Button onClick={onSave}>Save &amp; re-run</Button>
         </div>
       </div>
     </div>
@@ -54,8 +49,8 @@ function Frame({ children }: { children: ReactNode }) {
   );
 }
 
-export function TaskReview() {
-  const [state, dispatch] = useReducer(reducer, initialState);
+function ReviewScreen({ data }: { data: ReviewData }) {
+  const [state, dispatch] = useReducer(reducer, data, makeInitialState);
   const [correcting, setCorrecting] = useState(false);
 
   useEffect(() => {
@@ -66,7 +61,7 @@ export function TaskReview() {
 
   const steps = visibleSteps(state);
   const current = steps[state.step];
-  const remaining = TOTAL_STEPS - state.verifiedThrough;
+  const remaining = steps.length - state.verifiedThrough;
 
   const onAddVerifier = (assertion: string, code: string) => {
     const placeholder = !code.trim() || code.includes("/* define check */");
@@ -77,13 +72,12 @@ export function TaskReview() {
   return (
     <Frame>
       <Header />
-
       <div style={{ padding: "16px 16px 8px" }}>
         <SectionHeader n={1} title="Review & correct the agent run" subtitle="Verify each step; correct any step to re-run the agent from that state." />
         <div style={{ display: "flex", gap: 16, height: 632 }}>
           <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
             <ReplayPane
-              tabs={TABS}
+              tabs={data.tabs}
               activeTabId={state.activeTabId}
               onSelectTab={(id) => dispatch({ t: "selectTab", id })}
               step={current}
@@ -99,12 +93,12 @@ export function TaskReview() {
               verifiedThrough={state.verifiedThrough}
               stepsApproved={state.stepsApproved}
               remaining={remaining}
-              tabs={TABS}
+              tabs={data.tabs}
               onStepTo={(i) => dispatch({ t: "stepTo", i })}
               onApproveRemaining={() => dispatch({ t: "approveRemaining" })}
             />
           </main>
-          <RightPanel task={TASK} summary={runSummary(state)} />
+          <RightPanel task={data.task} summary={runSummary(state)} />
         </div>
       </div>
 
@@ -123,10 +117,35 @@ export function TaskReview() {
 
       {correcting && (
         <CorrectModal
+          seed={data.correctionSeed}
           onCancel={() => setCorrecting(false)}
           onSave={() => { dispatch({ t: "correctAndRerun", fromStep: current.idx }); setCorrecting(false); }}
         />
       )}
     </Frame>
   );
+}
+
+export function TaskReview() {
+  const [data, setData] = useState<ReviewData | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    fetchReview(TASK_ID).then((r) => {
+      if (!alive) return;
+      setData(r.data);
+      // eslint-disable-next-line no-console
+      console.info(`[annotator] review loaded from ${r.source}`);
+    });
+    return () => { alive = false; };
+  }, []);
+
+  if (!data) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: t.n3, fontFamily: t.fontPrimary }}>
+        Loading task…
+      </div>
+    );
+  }
+  return <ReviewScreen data={data} />;
 }

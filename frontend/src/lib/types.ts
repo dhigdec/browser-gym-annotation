@@ -1,18 +1,12 @@
 import type { ActionType, VerifierLevel } from "../ds/tokens";
 
-/** A browser tab in the replay pane — one of our gym apps. */
-export interface Tab {
-  id: string;
-  title: string; // e.g. "ShopGym"
-  host: string; // e.g. "shop.gym.local/cart"
-  color: string; // token var — dot + active border
-}
+export type AppKey = "shop" | "market" | "calendar" | "mail";
 
-/** One recorded agent step in the action trace. */
+/** One recorded agent step. */
 export interface Step {
-  idx: number; // 1-based display index
+  idx: number;
   type: ActionType;
-  tabId: string; // which app/tab it happened on
+  tabId: string;
   description: string;
 }
 
@@ -22,45 +16,89 @@ export interface Metric {
   tone?: "default" | "error" | "success";
 }
 
-export interface Task {
-  id: string; // "GYM-2041"
+/** A verifier check. */
+export interface Verifier {
+  id: string;
+  level: VerifierLevel;
+  assertion: string;
+  code: string;
+  failsUntilCorrected?: boolean;
+  placeholder?: boolean;
+}
+
+// ---- API shape (returned by the backend) ----------------------------------
+
+export interface ApiTab {
+  id: string;
+  app: AppKey;
+  title: string;
+  host: string;
+}
+export interface ApiSite {
+  host: string;
+  app: AppKey;
+}
+export interface ApiTask {
+  id: string;
   priority: "High" | "Medium" | "Low";
   title: string;
-  meta: string; // "E-commerce · Multi-tab · nav-agent-v4"
+  meta: string;
+  prompt: string;
+  startState: { summary: string; url: string };
+  constraints: string[];
+  allowedSites: ApiSite[];
+  runSummary: Metric[];
+}
+export interface ReviewPayload {
+  task: ApiTask;
+  tabs: ApiTab[];
+  steps: Step[];
+  correctionSeed: string;
+  correctedTail: Step[];
+  verifiers: Verifier[];
+}
+
+// ---- Domain shape (API mapped → colors resolved for rendering) ------------
+
+export interface Tab {
+  id: string;
+  title: string;
+  host: string;
+  color: string;
+}
+export interface Task {
+  id: string;
+  priority: "High" | "Medium" | "Low";
+  title: string;
+  meta: string;
   prompt: string;
   startState: { summary: string; url: string };
   constraints: string[];
   allowedSites: { host: string; color: string }[];
   runSummary: Metric[];
 }
-
-/** A single verifier check within a level group. */
-export interface Verifier {
-  id: string;
-  level: VerifierLevel;
-  assertion: string; // plain-English title
-  code: string; // the mono assertion line
-  /** true => this check scores 0 until the trace is corrected + re-run. */
-  failsUntilCorrected?: boolean;
-  /** true => empty/placeholder check (scores 0/error, never 1). */
-  placeholder?: boolean;
+export interface ReviewData {
+  task: Task;
+  tabs: Tab[];
+  steps: Step[];
+  correctionSeed: string;
+  correctedTail: Step[];
+  verifiers: Verifier[];
 }
 
 /** Review-flow state machine (mirrors the design's linear gate chain). */
 export interface ReviewState {
-  step: number; // 0-based current step in the scrubber
+  data: ReviewData;
+  step: number;
   activeTabId: string;
   playing: boolean;
-  verifiedThrough: number; // count of steps marked verified
+  verifiedThrough: number;
   stepsApproved: boolean;
   verifiersGenerated: boolean;
   benchmarkRun: boolean;
   submitted: boolean;
-  /** step index the trace was corrected from (fork), or null. */
   rerunFrom: number | null;
-  /** verifier ids the reviewer force-overrode to pass. */
   overrides: Record<string, boolean>;
   activeLevel: VerifierLevel;
-  /** extra verifiers the reviewer added, per level. */
   added: Verifier[];
 }

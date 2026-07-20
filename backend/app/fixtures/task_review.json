@@ -44,6 +44,11 @@
     { "idx": 15, "type": "tab", "tabId": "mail", "description": "Emailed the total in ShopMail" }
   ],
   "correctionSeed": "Pay with the personal PayPal — do not use the corporate Amex.",
+  "correctedTail": [
+    { "idx": 13, "type": "navigate", "tabId": "shop", "description": "Paid with the personal PayPal" },
+    { "idx": 14, "type": "submit", "tabId": "shop", "description": "Order placed · confirmation #SG8842" },
+    { "idx": 15, "type": "tab", "tabId": "mail", "description": "Emailed the total in ShopMail" }
+  ],
   "verifiers": [
     { "id": "ui1", "level": "ui", "assertion": "Cart shows the keyboard + mouse", "code": "assert dom('.cart .items').text == 'Wireless Keyboard, Wireless Mouse'" },
     { "id": "ui2", "level": "ui", "assertion": "Delivery date renders as May 22", "code": "assert dom('.checkout .deliver-by').text == 'May 22'" },
