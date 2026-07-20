@@ -1,0 +1,122 @@
+/* ============================================================
+   Deccan AI — Color tokens
+   Base palette (lifted from src/styles/core/_tokens.scss) plus
+   semantic aliases. Use the semantic aliases in product code;
+   reach for raw scale steps only when no alias fits.
+   ============================================================ */
+
+:root {
+  /* ---- Primary (Blue) ------------------------------------- */
+  --primary-0: #eef8ff;   /* tinted surface backgrounds */
+  --primary-1: #d9eeff;   /* hover surfaces, light fills */
+  --primary-2: #bbe3ff;   /* borders on light primary elements */
+  --primary-3: #8cd2ff;   /* decorative glows, gradient stops */
+  --primary-4: #56b9ff;   /* decorative, non-interactive */
+  --primary-5: #2f9aff;   /* background glow / gradient accents */
+  --primary-6: #1279f7;   /* CTA, links, active, focus ring */
+  --primary-7: #1165e4;   /* button hover, focus badge bg */
+  --primary-8: #1551b8;   /* pressed */
+  --primary-9: #174791;   /* dark emphasis */
+  --primary-10: #132c58;  /* deep — avoid in UI chrome */
+
+  /* ---- Neutrals (Grayscale) ------------------------------- */
+  --neutrals-0: #0d0d0d;  /* body text, headings */
+  --neutrals-1: #3b3b3b;  /* secondary headings, strong UI text */
+  --neutrals-2: #666666;  /* muted text, descriptions, labels */
+  --neutrals-3: #808080;  /* placeholders, disabled text, icons */
+  --neutrals-4: #b3b3b3;  /* dividers, subtle borders */
+  --neutrals-5: #cccccc;  /* input borders (rest) */
+  --neutrals-6: #d9d9d9;  /* hairline borders, table rules */
+  --neutrals-7: #e6e6e6;  /* card borders, subtle separators */
+  --neutrals-8: #f2f2f2;  /* alternate row, chip backgrounds */
+  --neutrals-85: #f5f5f5; /* default page / sidebar background */
+  --neutrals-9: #ffffff;  /* white — cards, inputs */
+
+  /* ---- Accent · Red — errors, destructive ----------------- */
+  --accent-red-lite: #eedcda;
+  --accent-red-dull: #eaaca5;
+  --accent-red: #ce2c31;
+  --accent-red-dark: #641818;
+
+  /* ---- Accent · Green — success, positive ----------------- */
+  --accent-green-lite: #d7e6dd;
+  --accent-green-dull: #a1c9b2;
+  --accent-green: #218358;
+  --accent-green-dark: #006d43;
+
+  /* ---- Accent · Yellow — warnings, caution ---------------- */
+  --accent-yellow-lite: #fde1b1;
+  --accent-yellow-dull: #efbd61;
+  --accent-yellow: #e7a300;
+  --accent-yellow-dark: #8a5c00;
+
+  /* ---- Accent · Purple — annotations, metadata ------------ */
+  --accent-purple-lite: #b9beed;
+  --accent-purple-dull: #6b71cf;
+  --accent-purple: #45478d;
+  --accent-purple-dark: #303063;
+
+  /* ---- Accent · Blue — informational, links --------------- */
+  --accent-blue-lite: #cbddef;
+  --accent-blue-dull: #8db1dd;
+  --accent-blue: #0d74ce;
+  --accent-blue-dark: #0062bb;
+
+  /* ---- Delta / Tag colors — timeline chips, data tags ----- */
+  --delta-pink: #d6006e;
+  --delta-cyan: #0097a7;
+  --delta-violet: #8b3fd9;
+  --delta-blue: var(--accent-blue);
+  --delta-emerald: var(--accent-green);
+  --delta-amber: var(--accent-yellow);
+  --delta-rose: var(--accent-red);
+  --delta-tag-id: #f5ebdc;   /* ID tag background */
+
+  /* ---- Overlay / Scrim ------------------------------------ */
+  --overlay-subtle: rgba(13, 13, 13, 0.05);   /* hover tints */
+  --overlay-medium: rgba(13, 13, 13, 0.10);   /* pressed overlays */
+  --overlay-backdrop: rgba(13, 13, 13, 0.50); /* modal backdrop */
+
+  /* ========================================================
+     Semantic aliases — prefer these in product code
+     ======================================================== */
+
+  /* Text */
+  --text-primary: var(--neutrals-0);
+  --text-secondary: var(--neutrals-1);
+  --text-muted: var(--neutrals-2);
+  --text-placeholder: var(--neutrals-3);
+  --text-disabled: var(--neutrals-3);
+  --text-on-primary: var(--neutrals-9);
+  --text-link: var(--primary-6);
+
+  /* Surfaces */
+  --surface-page: var(--neutrals-85);
+  --surface-card: var(--neutrals-9);
+  --surface-alt: var(--neutrals-8);
+  --surface-sidebar: var(--neutrals-85);
+  --surface-tint: var(--primary-0);
+
+  /* Borders */
+  --border-hairline: var(--neutrals-6);
+  --border-card: var(--neutrals-7);
+  --border-input: var(--accent-blue-lite);
+  --border-divider: var(--neutrals-4);
+  --border-strong: var(--neutrals-5);
+
+  /* Interactive */
+  --interactive-primary: var(--primary-6);
+  --interactive-primary-hover: var(--primary-7);
+  --interactive-primary-pressed: var(--primary-8);
+  --interactive-focus-ring: var(--primary-6);
+
+  /* Status (bg / text pairs for chips & banners) */
+  --status-success-bg: var(--accent-green-lite);
+  --status-success-fg: var(--accent-green-dark);
+  --status-warning-bg: var(--accent-yellow-lite);
+  --status-warning-fg: var(--accent-yellow-dark);
+  --status-error-bg: var(--accent-red-lite);
+  --status-error-fg: var(--accent-red-dark);
+  --status-info-bg: var(--accent-blue-lite);
+  --status-info-fg: var(--accent-blue-dark);
+}

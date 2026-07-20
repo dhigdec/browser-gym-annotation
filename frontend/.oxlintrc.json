@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "ignorePatterns": ["dist/**", "node_modules/**"],
+  "rules": {
+    "no-restricted-syntax": [
+      "warn",
+      {
+        "selector": "Literal[value=/#[0-9a-fA-F]{3,8}\\b/]",
+        "message": "Raw hex color — use a Deccan Vault color token via var(--...) (see src/ds/tokens.ts)."
+      },
+      {
+        "selector": "Literal[value=/font-family\\s*:\\s*(?!['\\\"]?(?:Inter Display|JetBrains Mono))/i]",
+        "message": "Font not in the design system. Use Inter Display (--font-primary) or JetBrains Mono (--font-mono)."
+      }
+    ]
+  }
+}

@@ -1,0 +1,63 @@
+/* ============================================================
+   Deccan Vault — Webfonts (self-hosted)
+   Cleaned from the vendored DS fonts.css:
+   · Inter Display 400/500/700/900 — UI & body (SIL OFL 1.1)
+   · JetBrains Mono 400/500/700 — code / IDs / counts / meters
+     (SIL OFL 1.1; self-hosted, NOT the Google CDN @import)
+   · Season Mix REMOVED — the shipped file is a TRIAL cut whose
+     license forbids serving; no component uses --font-display,
+     which falls back to Inter Display.
+   Note: Inter Display SemiBold (600) not shipped; CSS weight 600
+   resolves to Bold (700) per font-matching — matches the DS.
+   ============================================================ */
+
+@font-face {
+  font-family: "Inter Display";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/InterDisplay-Regular.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Inter Display";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/InterDisplay-Medium.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Inter Display";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/InterDisplay-Bold.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Inter Display";
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url("/fonts/InterDisplay-Black.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/JetBrainsMono-Regular.ttf") format("truetype");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/JetBrainsMono-Medium.ttf") format("truetype");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/JetBrainsMono-Bold.ttf") format("truetype");
+}

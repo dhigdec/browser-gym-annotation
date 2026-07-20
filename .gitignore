@@ -1,0 +1,25 @@
+# deps / build
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# artifacts (per-step MHTML / screenshots / video — stored out of git)
+artifacts/
+*.mhtml
+
+# os / editor
+.DS_Store
+*.log
+.idea/
+.vscode/

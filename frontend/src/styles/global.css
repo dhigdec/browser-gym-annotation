@@ -1,0 +1,65 @@
+/* ============================================================
+   Global entry — fonts + DS tokens + minimal base/reset.
+   Tokens are the vendored Deccan Vault values (colors, type,
+   spacing, radius, shadows, effects). Fonts are self-hosted.
+   ============================================================ */
+
+@import "./fonts.css";
+@import "./tokens/colors.css";
+@import "./tokens/typography.css";
+@import "./tokens/spacing.css";
+@import "./tokens/radius.css";
+@import "./tokens/shadows.css";
+@import "./tokens/effects.css";
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-primary);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  color: var(--text-primary);
+  background: var(--surface-page);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* Page scrollbars — per the design spec (10px, 3px transparent
+   inset, thumb clipped to content-box). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--neutrals-6) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--neutrals-6);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--radius-lg);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--neutrals-5);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}

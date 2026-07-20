@@ -1,0 +1,27 @@
+/* ============================================================
+   Deccan AI — Shadow tokens
+   Soft, near-black ambient shadows. --shadow-md is the resting
+   card elevation; escalate on hover. Do not add new shadow
+   values unless the scale is truly insufficient.
+   ============================================================ */
+
+:root {
+  --shadow-sm: 0 1px 2px rgba(13, 13, 13, 0.05);    /* barely-there lift */
+  --shadow-md: 0 1px 3px rgba(13, 13, 13, 0.08);    /* cards at rest */
+  --shadow-lg: 0 4px 12px rgba(13, 13, 13, 0.10);   /* floating / hover */
+  --shadow-xl: 0 10px 25px rgba(13, 13, 13, 0.12);  /* drawers, dropdowns */
+
+  /* Keyboard focus ring (also available as outline; see effects) */
+  --shadow-focus: 0 0 0 2px rgba(13, 116, 206, 0.30);
+
+  /* Tab underline / active nav item */
+  --shadow-inset: inset 0 -1px 0 var(--neutrals-7);
+
+  /* Error state glow on focus */
+  --shadow-error: 0 0 10px rgba(206, 44, 49, 0.50);
+
+  /* Highlighted / active card — blue-tinted multi-layer */
+  --shadow-elevated:
+    0 4px 12px rgba(18, 121, 247, 0.12),
+    0 1px 3px rgba(13, 13, 13, 0.08);
+}

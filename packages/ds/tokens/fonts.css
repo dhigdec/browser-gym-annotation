@@ -1,0 +1,58 @@
+/* ============================================================
+   Deccan AI — Webfonts
+   ------------------------------------------------------------
+   Licensed binaries shipped in assets/fonts/:
+   · Inter Display (400 / 500 / 700 / 900) — UI & body face,
+     confirmed against the live product homepage.
+   · Season Mix (400) — brand/display face. ⚠ TRIAL license file
+     (SeasonMix-TRIAL-Regular.ttf) — replace with the licensed
+     cut before production use.
+   · JetBrains Mono — code/data face, still loaded from Google
+     Fonts as a substitute (no licensed file provided yet).
+   Weight note: Inter Display SemiBold (600) was not provided;
+   CSS weight 600 resolves to Bold (700) per font-matching rules.
+   ============================================================ */
+
+/* JetBrains Mono — substitute until a licensed file is provided.
+   (@import must precede all other rules.) */
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap");
+
+@font-face {
+  font-family: "Inter Display";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../assets/fonts/InterDisplay-Regular.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Inter Display";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../assets/fonts/InterDisplay-Medium.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Inter Display";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("../assets/fonts/InterDisplay-Bold.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Inter Display";
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url("../assets/fonts/InterDisplay-Black.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Season Mix";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../assets/fonts/SeasonMix-TRIAL-Regular.ttf") format("truetype");
+}

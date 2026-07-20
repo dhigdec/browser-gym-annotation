@@ -1,0 +1,43 @@
+/* ============================================================
+   Deccan AI — Typography tokens
+   Inter Display for all UI & body text (confirmed against the
+   live product). Season Mix for brand/display moments only.
+   JetBrains Mono for code / data values / IDs.
+   ============================================================ */
+
+:root {
+  /* ---- Font families -------------------------------------- */
+  --font-primary: "Inter Display", system-ui, -apple-system,
+    "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-family-sans: "Inter Display", system-ui, -apple-system,
+    "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-display: "Season Mix", "Inter Display", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo,
+    Consolas, "Liberation Mono", monospace;
+
+  /* ---- Font sizes (role-based, from component usage) ------ */
+  --text-page-heading: 1.5rem;     /* 24px / 600 */
+  --text-focus-badge: 1.15rem;     /* 18.4px / 600 */
+  --text-card-title: 1.25rem;      /* 20px / 700 */
+  --text-body: 1rem;               /* 16px / 400 */
+  --text-button: 0.875rem;         /* 14px / 600 */
+  --text-label: 0.875rem;          /* 14px / 400 */
+  --text-table-header: 0.8125rem;  /* 13px / 600 */
+  --text-caption: 0.75rem;         /* 12px / 700 */
+  --text-micro: 0.65rem;           /* 10.4px / 600 — domain pill */
+
+  /* ---- Font weights --------------------------------------- */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* ---- Line heights --------------------------------------- */
+  --leading-heading: 1.23;   /* 123% */
+  --leading-body: 1.5;
+  --leading-tight: 1;        /* buttons / labels */
+
+  /* ---- Letter spacing ------------------------------------- */
+  --tracking-heading: -1.12px;
+  --tracking-normal: 0;
+}
