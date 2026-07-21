@@ -251,6 +251,23 @@ def generate_trace_policies(brief: str, actions: list[dict]) -> list[str]:
     return [str(p).strip() for p in arr if isinstance(p, str) and p.strip()][:3]
 
 
+def generate_policy_counterfactual(policy: str, actions: list[dict]) -> str | None:
+    """For a candidate negative-constraint policy, produce ONE minimal action a
+    careless agent might take that WOULD VIOLATE it — the breaker counterfactual
+    used to prove the policy actually discriminates (0 on a violation, 1 on the
+    correct run)."""
+    prompt = (
+        "Given a POLICY an agent must never violate and the CORRECT actions it "
+        "took, produce ONE short action a careless agent might take that WOULD "
+        "VIOLATE the policy.\n\n"
+        f"POLICY: {policy}\n"
+        f"CORRECT ACTIONS: {json.dumps(actions)[:1500]}\n\n"
+        "Return ONLY the single violating action as a short past-tense sentence."
+    )
+    text = _call_claude(prompt, max_tokens=60)
+    return text.strip() if text else None
+
+
 def deterministic_branch(fixture: dict, from_step: int, correction: str) -> list[dict]:
     """The deterministic (gold-path) continuation after a correction at from_step.
 

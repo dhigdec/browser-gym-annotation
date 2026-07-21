@@ -290,21 +290,34 @@ def _autogen_verifiers_job(task_id: str, seed: int, iterations: int) -> dict:
          "description": s.get("reasoning") or f"{s.get('action_kind')} {s.get('action_args')}"}
         for s in steps
     ]
+    actions = [{"action": s.get("action_kind"), "args": s.get("action_args")} for s in steps]
     policy_checks = []
-    for i, pol in enumerate(agent.generate_trace_policies(brief, [{"action": s.get("action_kind"), "args": s.get("action_args")} for s in steps])):
-        if agent.judge_trajectory(pol, golden_trace) is True:  # the oracle must obey it
-            policy_checks.append({
-                "id": f"p{i + 1}", "level": "safety", "assertion": pol,
-                "code": f"policy: {pol}", "check": {"kind": "trace_policy", "policy": pol},
-            })
+    for i, pol in enumerate(agent.generate_trace_policies(brief, actions)):
+        if agent.judge_trajectory(pol, golden_trace) is not True:  # the oracle must OBEY it
+            continue
+        # Breaker gate: a minimal violating counterfactual must be FLAGGED, proving
+        # the policy actually discriminates (0 on a violation, 1 on the correct run).
+        cf = agent.generate_policy_counterfactual(pol, actions)
+        discriminates = False
+        if cf:
+            bad_trace = golden_trace + [{"idx": len(golden_trace), "type": "action", "tabId": "gym", "description": cf}]
+            discriminates = agent.judge_trajectory(pol, bad_trace) is False
+        policy_checks.append({
+            "id": f"p{i + 1}", "level": "safety", "assertion": pol,
+            "code": f"policy: {pol}", "check": {"kind": "trace_policy", "policy": pol},
+            "discriminates": discriminates, "counterexample": cf,
+        })
 
+    validated = [p for p in policy_checks if p["discriminates"]]
     return {
         "oracle": bool(gate and gate.get("oracle")),
         "iterations": len(history),
         "brief": brief,
-        "suite": (suite or []) + policy_checks,
+        # Only gate-passing state checks + discriminating policies go in the suite.
+        "suite": (suite or []) + validated,
         "stateChecks": len(suite or []),
-        "policyChecks": len(policy_checks),
+        "policyChecks": len(validated),
+        "policyProposed": len(policy_checks),
         "gate": gate,
         "history": history,
     }
