@@ -17,7 +17,6 @@ export function FocusBadge({ children, style }: { children: ReactNode; style?: C
         borderRadius: t.radiusXl,
         fontWeight: weight.semibold,
         fontSize: "0.8rem",
-        lineHeight: 1,
         padding: "3px 12px",
         whiteSpace: "nowrap",
         ...style,

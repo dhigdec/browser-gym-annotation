@@ -1,4 +1,4 @@
-import { Button, Icon, Tag, t, weight, ACTION_COLOR } from "../../../ds";
+import { Icon, t, weight, ACTION_COLOR } from "../../../ds";
 import type { Step, Tab } from "../../../lib/types";
 import type { StepStatus } from "../../../lib/reviewMachine";
 
@@ -6,22 +6,21 @@ import type { StepStatus } from "../../../lib/reviewMachine";
 function StatusCircle({ variant }: { variant: StepStatus }) {
   if (variant === "verified") {
     return (
-      <span style={{ width: 18, height: 18, borderRadius: t.radiusFull, background: t.green, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-        <Icon name="check" size={11} stroke={2.6} color={t.n9} />
+      <span style={{ width: 16, height: 16, borderRadius: t.radiusFull, background: t.green, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <Icon name="check" size={10} stroke={2.8} color={t.n9} />
       </span>
     );
   }
   if (variant === "corrected") {
     return (
-      <span style={{ width: 18, height: 18, borderRadius: t.radiusFull, background: t.primary6, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-        <Icon name="pencil" size={10} stroke={2} color={t.n9} />
+      <span style={{ width: 16, height: 16, borderRadius: t.radiusFull, background: t.primary6, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <Icon name="pencil" size={9} stroke={2} color={t.n9} />
       </span>
     );
   }
-  // re-run / pending → hollow ring (pink for re-run, grey for pending)
   const ring = variant === "rerun" ? ACTION_COLOR.tab : t.n5;
   return (
-    <span style={{ width: 18, height: 18, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+    <span style={{ width: 16, height: 16, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
       <span style={{ width: 11, height: 11, borderRadius: t.radiusFull, border: `2px solid ${ring}` }} />
     </span>
   );
@@ -65,26 +64,26 @@ export function ActionTrace({
   const forkAt = rerunFrom == null ? -1 : steps.findIndex((s) => s.idx > rerunFrom);
 
   return (
-    <div style={{ height: 200, flexShrink: 0, background: t.n9, border: `1px solid ${t.n7}`, borderRadius: t.radiusXl, boxShadow: t.shadowMd, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: `1px solid ${t.n7}` }}>
-        <span style={{ fontSize: "0.875rem", fontWeight: weight.bold, color: t.n0 }}>Action trace</span>
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <span style={{ fontFamily: t.fontMono, fontSize: "0.8125rem", color: stepsApproved ? t.greenDark : t.n2 }}>
+    <div style={{ height: 184, flexShrink: 0, background: t.n9, border: `1px solid ${t.n7}`, borderRadius: t.radiusXl, boxShadow: t.shadowMd, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", borderBottom: `1px solid ${t.n7}`, flexShrink: 0 }}>
+        <span style={{ fontSize: "0.8125rem", fontWeight: weight.bold, color: t.n1 }}>Action trace</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontFamily: t.fontMono, fontSize: "0.719rem", fontWeight: weight.bold, color: t.greenDark }}>
             Reviewed {verifiedThrough} / {steps.length}
           </span>
           {stepsApproved ? (
-            <Tag tone="tinted" color={t.green}>
-              <Icon name="check" size={13} color={t.greenDark} style={{ marginRight: 4 }} /> Steps approved
-            </Tag>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 11px", borderRadius: 7, background: t.greenLite, color: t.greenDark, fontSize: "0.75rem", fontWeight: weight.bold }}>
+              <Icon name="check" size={13} stroke={2.4} color={t.greenDark} /> Steps approved
+            </span>
           ) : (
-            <Button onClick={onApproveRemaining}>
-              <Icon name="check" size={14} style={{ marginRight: 4 }} /> {reviewedAll ? "Approve all steps" : `Approve remaining ${remaining}`}
-            </Button>
+            <span onClick={onApproveRemaining} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 7, background: t.primary6, border: `1px solid ${t.primary6}`, color: t.n9, fontSize: "0.75rem", fontWeight: weight.bold, cursor: "pointer" }}>
+              <Icon name="check" size={14} stroke={2.2} color={t.n9} /> {reviewedAll ? "Approve all steps" : `Approve remaining ${remaining}`}
+            </span>
           )}
         </div>
       </div>
 
-      <div style={{ overflowY: "auto" }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         {steps.map((s, i) => {
           const selected = i === current;
           const variant = statusOf(s, verifiedThrough, rerunFrom);
@@ -99,27 +98,27 @@ export function ActionTrace({
               <div
                 onClick={() => onStepTo(i)}
                 style={{
-                  display: "grid",
-                  gridTemplateColumns: "34px 24px 92px 1fr auto",
+                  display: "flex",
                   alignItems: "center",
                   gap: 10,
                   padding: "9px 16px",
                   cursor: "pointer",
                   background: selected ? t.surfaceTint : "transparent",
-                  boxShadow: selected ? `inset 3px 0 0 ${t.primary6}` : "none",
+                  borderLeft: `2px solid ${selected ? t.primary6 : "transparent"}`,
                   transition: t.transitionUi,
                 }}
               >
-                <span style={{ fontFamily: t.fontMono, fontSize: "0.8125rem", color: t.n3 }}>{String(s.idx).padStart(2, "0")}</span>
+                <span style={{ fontFamily: t.fontMono, fontSize: "0.719rem", color: t.n3, width: 22, flexShrink: 0 }}>{String(s.idx).padStart(2, "0")}</span>
                 <StatusCircle variant={variant} />
-                <span style={{ fontSize: "0.72rem", fontWeight: weight.bold, letterSpacing: "0.03em", textTransform: "uppercase", color: ACTION_COLOR[s.type] }}>{s.type}</span>
-                <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                  <span style={{ fontSize: "0.875rem", color: t.n1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.description}</span>
+                <span style={{ width: 8, height: 8, borderRadius: t.radiusFull, background: ACTION_COLOR[s.type], flexShrink: 0 }} />
+                <span style={{ fontSize: "0.625rem", fontWeight: weight.bold, letterSpacing: "0.04em", textTransform: "uppercase", color: ACTION_COLOR[s.type], width: 64, flexShrink: 0 }}>{s.type}</span>
+                <span style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: "0.8125rem", color: t.n1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.description}</span>
                   {variant === "rerun" && (
-                    <span style={{ flexShrink: 0, fontSize: "0.6rem", fontWeight: weight.bold, textTransform: "uppercase", letterSpacing: "0.04em", color: pink, background: `color-mix(in srgb, ${pink} 12%, transparent)`, padding: "2px 6px", borderRadius: t.radiusSm }}>re-run</span>
+                    <span style={{ flexShrink: 0, fontSize: "0.594rem", fontWeight: weight.bold, textTransform: "uppercase", letterSpacing: "0.04em", color: pink, background: `color-mix(in srgb, ${pink} 12%, transparent)`, padding: "2px 6px", borderRadius: t.radiusSm }}>re-run</span>
                   )}
                 </span>
-                <span style={{ fontSize: "0.8125rem", color: t.n3, fontFamily: t.fontMono }}>{titleOf(s.tabId)}</span>
+                <span style={{ fontSize: "0.6875rem", color: t.n3, fontFamily: t.fontMono, flexShrink: 0 }}>{titleOf(s.tabId)}</span>
               </div>
             </div>
           );

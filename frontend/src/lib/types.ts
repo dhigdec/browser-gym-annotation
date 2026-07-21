@@ -10,6 +10,8 @@ export interface Step {
   description: string;
   /** captured-snapshot key for this step's page (served at /api/snapshots/{key}). */
   snapshot?: string;
+  /** page-level error message shown as the red frame banner (error steps, §2.1). */
+  errorMsg?: string;
 }
 
 export interface Metric {

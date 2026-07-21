@@ -25,7 +25,6 @@ import {
 } from "../../lib/reviewMachine";
 import { Header } from "./components/Header";
 import { ReplayPane } from "./components/ReplayPane";
-import { Scrubber } from "./components/Scrubber";
 import { ActionTrace } from "./components/ActionTrace";
 import { RightPanel } from "./components/RightPanel";
 import { VerifierSuite } from "./components/VerifierSuite";
@@ -205,7 +204,9 @@ function ReviewScreen({ data, nav }: { data: ReviewData; nav: TaskNav }) {
               onSelectTab={(id) => dispatch({ t: "selectTab", id })}
               step={current}
               stepNumber={current.idx}
-              corrected={state.rerunFrom != null}
+              stepIndex={state.step}
+              steps={steps}
+              playing={state.playing}
               resolved={isResolved(state, current)}
               verified={isVerified(state, current)}
               correcting={correcting}
@@ -223,8 +224,9 @@ function ReviewScreen({ data, nav }: { data: ReviewData; nav: TaskNav }) {
                 }
                 dispatch({ t: "correctAndRerun", fromStep: current.idx, branch, mode });
               }}
+              onPlayToggle={() => dispatch({ t: "playToggle" })}
+              onStepTo={(i) => dispatch({ t: "stepTo", i })}
             />
-            <Scrubber steps={steps} step={state.step} playing={state.playing} onPlayToggle={() => dispatch({ t: "playToggle" })} onStepTo={(i) => dispatch({ t: "stepTo", i })} />
             <ActionTrace
               steps={steps}
               current={state.step}

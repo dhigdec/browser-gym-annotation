@@ -50,17 +50,17 @@ export function Header({ index, total, onPrev, onNext, onSkip }: { index: number
       <Rule />
       <nav style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.8125rem" }}>
         <span style={{ color: t.n3 }}>Browser-Use Gym</span>
-        <Icon name="chevronRight" size={14} stroke={1.6} color={t.n4} />
+        <Icon name="chevronRight" size={14} stroke={1.6} color={t.n3} />
         <span style={{ color: t.n1, fontWeight: weight.semibold }}>Tasking</span>
       </nav>
       <Rule />
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }} title="One task at a time">
         <PagerBox dir="chevronLeft" onClick={onPrev} disabled={index <= 0} />
         <span style={{ fontSize: "0.8125rem", fontWeight: weight.semibold, color: t.n1, whiteSpace: "nowrap" }}>
           Task <span style={mono}>{index + 1}</span> of <span style={mono}>{total}</span>
         </span>
         <PagerBox dir="chevronRight" onClick={onNext} disabled={index >= total - 1} />
-        <span onClick={onSkip} style={{ marginLeft: 4, fontSize: "0.78rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer" }}>
+        <span onClick={onSkip} style={{ marginLeft: 4, fontSize: "0.78125rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer" }}>
           Skip
         </span>
       </div>

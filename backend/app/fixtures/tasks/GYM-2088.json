@@ -111,7 +111,8 @@
       "type": "error",
       "tabId": "shop",
       "description": "Delivery set to May 24 \u2014 after the event",
-      "snapshot": "shop_payments"
+      "snapshot": "shop_payments",
+      "errorMsg": "This delivery date falls after your 'Desk setup' event \u2014 pick an earlier slot."
     },
     {
       "idx": 7,

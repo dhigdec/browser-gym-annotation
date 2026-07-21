@@ -19,6 +19,7 @@ export type IconName =
   | "check"
   | "checkSquare"
   | "branch"
+  | "alert"
   | "swap";
 
 const STROKE: Record<string, string> = {
@@ -107,6 +108,14 @@ export function Icon({
       <svg {...common}>
         <rect x="3.5" y="3.5" width="17" height="17" rx="4" stroke={color} strokeWidth={stroke} />
         <path d="M8 12l3 3 5-5.5" stroke={color} strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  if (name === "alert") {
+    return (
+      <svg {...common}>
+        <circle cx="12" cy="12" r="9" stroke={color} strokeWidth={stroke} fill="none" />
+        <path d="M12 7v6M12 16.5v.5" stroke={color} strokeWidth={1.8} strokeLinecap="round" />
       </svg>
     );
   }

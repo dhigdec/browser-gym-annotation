@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { t, tint, weight } from "./tokens";
+import { t, weight } from "./tokens";
 
 export type MeterState = "pending" | "pass" | "fail";
 
@@ -13,7 +13,7 @@ export type MeterState = "pending" | "pass" | "fail";
 export function Meter({
   state,
   value,
-  size = 30,
+  size = 22,
   style,
 }: {
   state: MeterState;
@@ -21,7 +21,7 @@ export function Meter({
   size?: number;
   style?: CSSProperties;
 }) {
-  const shown = value ?? (state === "pass" ? 1 : state === "fail" ? 0 : "");
+  const shown = value ?? (state === "pass" ? 1 : state === "fail" ? 0 : "–");
 
   const skins: Record<MeterState, CSSProperties> = {
     pending: {
@@ -30,12 +30,12 @@ export function Meter({
       color: t.n3,
     },
     pass: {
-      background: tint(t.green, 14),
+      background: t.greenLite,
       border: "1px solid transparent",
       color: t.greenDark,
     },
     fail: {
-      background: tint(t.red, 14),
+      background: t.redLite,
       border: "1px solid transparent",
       color: t.redDark,
     },
@@ -51,7 +51,7 @@ export function Meter({
         height: size,
         borderRadius: t.radiusMd,
         fontFamily: t.fontMono,
-        fontSize: "0.8125rem",
+        fontSize: "0.75rem",
         fontWeight: weight.bold,
         ...skins[state],
         ...style,
