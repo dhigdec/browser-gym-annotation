@@ -1,5 +1,8 @@
-# Rendered by nginx's envsubst entrypoint. ${PORT} (Cloud Run injects it; 8080
-# locally) and ${BACKEND_ORIGIN} (the backend service URL) come from the env.
+# Rendered by nginx's envsubst entrypoint. From the env: ${PORT} (Cloud Run
+# injects it; 8080 locally), ${BACKEND_ORIGIN} (backend service URL) and
+# ${BACKEND_HOST} (its hostname). The Host header MUST be the backend's hostname
+# so Cloud Run routes correctly, and proxy_ssl_server_name sends SNI for the
+# HTTPS upstream — without these, /api 404s in a hosted deploy.
 server {
   listen ${PORT};
   server_name _;
@@ -8,8 +11,11 @@ server {
   # API → backend service (same-origin to the browser; proxied server-side).
   location /api/ {
     proxy_pass ${BACKEND_ORIGIN};
-    proxy_set_header Host $host;
+    proxy_http_version 1.1;
+    proxy_set_header Host ${BACKEND_HOST};
+    proxy_ssl_server_name on;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
     proxy_read_timeout 300s;
   }
 

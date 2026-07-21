@@ -43,27 +43,34 @@ if ! gcloud sql instances describe "$SQL_INSTANCE" >/dev/null 2>&1; then
   gcloud sql users create "$DB_USER" --instance="$SQL_INSTANCE" --password="$DB_PASS"
 fi
 
-DB_URL="postgresql+psycopg://${DB_USER}:${DB_PASS}@/${DB_NAME}?host=/cloudsql/${CONN}"
+# URL-encode the password so a strong password with @ / : , etc. is safe inside
+# the connection string.
+DB_PASS_ENC="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$DB_PASS")"
+DB_URL="postgresql+psycopg://${DB_USER}:${DB_PASS_ENC}@/${DB_NAME}?host=/cloudsql/${CONN}"
 
 say "Build + push images (Cloud Build)"
 gcloud builds submit backend  --tag "$AR/backend:latest"
 gcloud builds submit frontend --tag "$AR/frontend:latest"
 
 say "Deploy backend (Cloud Run) — runs migrations on boot"
-BACKEND_ENV="ENV=prod,AUTO_CREATE_ALL=false,RUN_MIGRATIONS=1,DATABASE_URL=${DB_URL},CORS_ORIGINS=[\"*\"]"
-[ -n "$ANTHROPIC_API_KEY" ] && BACKEND_ENV="${BACKEND_ENV},ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}"
-[ -n "$GYM_URL" ]           && BACKEND_ENV="${BACKEND_ENV},GYM_URL=${GYM_URL}"
+# '|' as the env-var delimiter (^|^) — none of our values contain it — so a
+# DATABASE_URL / CORS list with commas or colons can't corrupt var parsing.
+BACKEND_ENV="^|^ENV=prod|AUTO_CREATE_ALL=false|RUN_MIGRATIONS=1|DATABASE_URL=${DB_URL}|CORS_ORIGINS=[\"*\"]"
+[ -n "$ANTHROPIC_API_KEY" ] && BACKEND_ENV="${BACKEND_ENV}|ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}"
+[ -n "$GYM_URL" ]           && BACKEND_ENV="${BACKEND_ENV}|GYM_URL=${GYM_URL}"
 gcloud run deploy annotator-backend \
   --image "$AR/backend:latest" --region "$REGION" --platform managed --allow-unauthenticated \
   --add-cloudsql-instances "$CONN" --set-env-vars "$BACKEND_ENV" \
   --min-instances 1 --cpu 1 --memory 512Mi --timeout 300
 
 BACKEND_URL="$(gcloud run services describe annotator-backend --region "$REGION" --format='value(status.url)')"
+# nginx must send the backend's HOSTNAME as Host + SNI, or Cloud Run won't route /api.
+BACKEND_HOST="${BACKEND_URL#https://}"; BACKEND_HOST="${BACKEND_HOST#http://}"; BACKEND_HOST="${BACKEND_HOST%%/*}"
 
 say "Deploy frontend (Cloud Run) — proxies /api → $BACKEND_URL"
 gcloud run deploy annotator-frontend \
   --image "$AR/frontend:latest" --region "$REGION" --platform managed --allow-unauthenticated \
-  --set-env-vars "BACKEND_ORIGIN=${BACKEND_URL}" --cpu 1 --memory 256Mi
+  --set-env-vars "^|^BACKEND_ORIGIN=${BACKEND_URL}|BACKEND_HOST=${BACKEND_HOST}" --cpu 1 --memory 256Mi
 
 FRONTEND_URL="$(gcloud run services describe annotator-frontend --region "$REGION" --format='value(status.url)')"
 say "Done"
