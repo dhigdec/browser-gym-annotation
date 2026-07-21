@@ -79,6 +79,13 @@ def test_resume_502_when_gym_unreachable(client, monkeypatch):
     assert client.post("/api/gym/resume", json={"taskId": "A1/x", "seed": 0}).status_code == 502
 
 
+def test_resume_run_is_async_and_pollable(client, monkeypatch):
+    monkeypatch.setattr("app.gym_client.resume_run", lambda *a, **k: None)  # drive fails → terminal error
+    r = client.post("/api/gym/resume-run", json={"taskId": "A1/x", "seed": 0, "worldState": {"shop": {}}, "resumeUrl": "/"})
+    assert r.status_code == 200 and r.json().get("jobId")
+    assert _poll(client, r.json()["jobId"])["status"] == "error"
+
+
 def test_job_store_runs_and_captures_outcomes():
     import time
 

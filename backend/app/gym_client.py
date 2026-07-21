@@ -73,6 +73,16 @@ def load_state(task_id: str, seed: int, state: dict, step: int | None = None) ->
     return _req("POST", "/_harness/load_state", body)
 
 
+def resume_run(task_id: str, seed: int, state: dict, url: str, step: int | None = None, agent: str = "llm") -> dict | None:
+    """Drive-forward resume: load a corrected world into the gym and drive an
+    OBSERVING agent forward from the mid-episode URL, then verify. Slow (a real
+    agent run) + stochastic for LLM agents. See POST /_harness/resume_run."""
+    body: dict = {"agent": agent, "task_id": task_id, "seed": seed, "state": state, "url": url or "/"}
+    if step is not None:
+        body["step"] = step
+    return _req("POST", "/_harness/resume_run", body, timeout=300)
+
+
 def resume_verify(task_id: str, seed: int, state: dict, url_trail: list[str], final_url: str = "") -> dict | None:
     """Load a corrected state, then replay /_harness/verify across the trajectory's
     per-step URLs so path-progression milestones fire, and return the REAL final

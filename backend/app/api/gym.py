@@ -219,6 +219,42 @@ def gym_resume(body: ResumeBody) -> dict:
     }
 
 
+def _resume_run_job(task_id: str, seed: int, state: dict, url: str, step, agent: str) -> dict:
+    r = gym_client.resume_run(task_id, seed, state, url, step, agent)
+    if r is None:
+        raise jobs.JobFailure("gym unreachable or resume-run failed")
+    if not (r.get("trajectory") or {}).get("steps"):
+        raise jobs.JobFailure("resume run produced no trajectory (agent may need an API key)")
+    review = gym_review.to_review(r, task_id, agent)
+    review["backendState"] = gym_client.state()
+    review.setdefault("gymResume", {})["worldState"] = gym_client.world()
+    vr = (r.get("trajectory") or {}).get("verifier_result") or {}
+    review["gymReward"] = 1 if vr.get("success") else 0  # the driven-forward verdict
+    return review
+
+
+class ResumeRunBody(BaseModel):
+    taskId: str
+    seed: int = 0
+    worldState: dict = {}
+    edits: dict = {}
+    resumeStep: int | None = None
+    resumeUrl: str = "/"
+    agent: str = "llm"
+
+
+@router.post("/resume-run")
+def gym_resume_run(body: ResumeRunBody) -> dict:
+    """Drive-forward resume (async): load the corrected world (+ edits) and drive
+    an OBSERVING agent FORWARD from the mid-episode URL in the gym, then verify.
+    Slow + (for LLM agents) stochastic — runs as a job; poll GET /api/gym/jobs/{id}."""
+    state = _apply_edits(body.worldState, body.edits) if body.edits else body.worldState
+    job = jobs.store.submit(
+        "resume-run", _resume_run_job, body.taskId, body.seed, state, body.resumeUrl, body.resumeStep, body.agent
+    )
+    return {"jobId": job.id, "status": job.status}
+
+
 @router.get("/screenshot")
 def gym_screenshot(path: str) -> Response:
     """Proxy a per-step screenshot PNG from the gym."""
