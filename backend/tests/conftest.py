@@ -12,14 +12,20 @@ from app.main import app
 
 
 @pytest.fixture()
-def client():
+def _engine():
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
     Base.metadata.create_all(engine)
-    TestingSession = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    yield engine
+    Base.metadata.drop_all(engine)
+
+
+@pytest.fixture()
+def client(_engine):
+    TestingSession = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
 
     def override_get_db():
         db = TestingSession()
@@ -32,4 +38,14 @@ def client():
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
-    Base.metadata.drop_all(engine)
+
+
+@pytest.fixture()
+def db_session(_engine):
+    """A read session bound to the same DB the API writes to (for assertions)."""
+    TestingSession = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
+    db = TestingSession()
+    try:
+        yield db
+    finally:
+        db.close()

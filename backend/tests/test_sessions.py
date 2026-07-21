@@ -111,3 +111,35 @@ def test_submit_requires_a_prior_benchmark_run(client):
     client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
     r = client.post(f"/api/sessions/{sid}/submit", json={"reward": 1, "override": True, "overrideReason": "x"})
     assert r.status_code == 409  # must run the benchmark first
+
+
+# ---- start-new session, submit-once, and the trajectory record ----
+
+
+def test_fresh_starts_a_new_session(client):
+    sid1 = _open(client)
+    resumed = client.post("/api/tasks/GYM-2041/sessions", json={}).json()["sessionId"]
+    assert resumed == sid1  # default resumes the latest
+    fresh = client.post("/api/tasks/GYM-2041/sessions", json={"fresh": True}).json()["sessionId"]
+    assert fresh != sid1  # fresh=true starts a new one
+
+
+def test_submit_locks_the_session(client, monkeypatch):
+    monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
+    sid = _open(client)
+    vs = _verifiers(client)
+    client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
+    client.post(f"/api/sessions/{sid}/run", json={"corrected": True, "verifiers": vs, "overrides": []})
+    assert client.post(f"/api/sessions/{sid}/submit", json={"reward": 1, "override": False}).status_code == 200
+    # A submitted session is immutable — no superseding submission.
+    assert client.post(f"/api/sessions/{sid}/submit", json={"reward": 0, "override": True, "overrideReason": "x"}).status_code == 409
+
+
+def test_open_session_records_a_trajectory(client, db_session):
+    from app.models import Trajectory, TrajectoryStep
+
+    sid = _open(client)
+    trajs = db_session.query(Trajectory).all()
+    assert len(trajs) == 1
+    assert str(trajs[0].session_id) == sid
+    assert db_session.query(TrajectoryStep).count() > 0  # the fixture trace is recorded

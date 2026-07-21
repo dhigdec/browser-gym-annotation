@@ -113,9 +113,10 @@ async function send(url: string, method: "PATCH" | "PUT", body: unknown): Promis
   }
 }
 
-/** Resume (or create) this annotator's session for a task. */
-export function openSession(taskId: string): Promise<SessionSnapshot | null> {
-  return post<SessionSnapshot>(`/api/tasks/${encodeURIComponent(taskId)}/sessions`, {});
+/** Resume (or create) this annotator's session for a task. `fresh` forces a new
+ *  session — used to re-annotate a task whose latest session is submitted. */
+export function openSession(taskId: string, opts?: { fresh?: boolean }): Promise<SessionSnapshot | null> {
+  return post<SessionSnapshot>(`/api/tasks/${encodeURIComponent(taskId)}/sessions`, { fresh: opts?.fresh ?? false });
 }
 
 export function patchSession(
@@ -162,6 +163,20 @@ export function submitSession(
 // ---- real gym tasks (M8) ---------------------------------------------------
 
 export interface GymTaskItem { id: string; category?: string; difficulty?: string }
+
+export interface GymStatus { connected: boolean; url: string }
+
+/** Whether a live gym is reachable. In a hosted deploy with no GYM_URL this is
+ *  false, and the UI gates the 312-task features while the fixture flow works. */
+export async function fetchGymStatus(): Promise<GymStatus> {
+  try {
+    const res = await fetch("/api/gym/status");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()) as GymStatus;
+  } catch {
+    return { connected: false, url: "" };
+  }
+}
 
 /** The catalog of real gym tasks (312), or null if the gym is unreachable. */
 export async function fetchGymTasks(): Promise<GymTaskItem[] | null> {

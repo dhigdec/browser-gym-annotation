@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { Icon, t, weight } from "../../ds";
 import {
+  fetchGymStatus,
   fetchGymTasks,
   fetchReview,
   fetchTasks,
@@ -81,7 +82,7 @@ interface TaskNav {
   onExitGym?: () => void;
 }
 
-function ReviewScreen({ data, nav }: { data: ReviewData; nav: TaskNav }) {
+function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData; nav: TaskNav; startFresh: boolean; onStartNew: () => void }) {
   const [state, dispatch] = useReducer(reducer, data, makeInitialState);
   const [correcting, setCorrecting] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -102,7 +103,7 @@ function ReviewScreen({ data, nav }: { data: ReviewData; nav: TaskNav }) {
 
   useEffect(() => {
     let alive = true;
-    openSession(data.task.id).then((snap) => {
+    openSession(data.task.id, { fresh: startFresh }).then((snap) => {
       if (!alive || !snap) return;
       setSessionId(snap.sessionId);
       // Seed the sync refs to the restored state so we don't echo it back.
@@ -209,7 +210,17 @@ function ReviewScreen({ data, nav }: { data: ReviewData; nav: TaskNav }) {
     <Frame>
       <Header {...nav} />
       <div style={{ padding: "16px 16px 8px" }}>
-        <SectionHeader n={1} title="Review & correct the agent run" subtitle="Verify each step; correct any step to re-run the agent from that state." right={<SaveBadge sessionId={sessionId} status={status} />} />
+        <SectionHeader n={1} title="Review & correct the agent run" subtitle="Verify each step; correct any step to re-run the agent from that state." right={
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <SaveBadge sessionId={sessionId} status={status} />
+            {(state.submitted || status === "submitted") && (
+              <span onClick={onStartNew} title="This session is submitted and locked — start a fresh annotation of this task"
+                style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, background: t.n9, color: t.primary6, fontSize: "0.75rem", fontWeight: weight.semibold, cursor: "pointer", whiteSpace: "nowrap" }}>
+                <Icon name="plus" size={13} stroke={2.2} /> New annotation
+              </span>
+            )}
+          </div>
+        } />
         <div style={{ display: "flex", gap: 16, height: 632 }}>
           <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
             <ReplayPane
@@ -278,8 +289,15 @@ function ReviewScreen({ data, nav }: { data: ReviewData; nav: TaskNav }) {
 
 function GymPicker({ onClose, onPick }: { onClose: () => void; onPick: (id: string) => void }) {
   const [all, setAll] = useState<string[] | null>(null);
+  const [connected, setConnected] = useState<boolean | null>(null);
   const [q, setQ] = useState("");
-  useEffect(() => { fetchGymTasks().then((ts) => setAll(ts ? ts.map((x) => x.id) : [])); }, []);
+  useEffect(() => {
+    fetchGymStatus().then((st) => {
+      setConnected(st.connected);
+      if (st.connected) fetchGymTasks().then((ts) => setAll(ts ? ts.map((x) => x.id) : []));
+      else setAll([]);
+    });
+  }, []);
   const list = (all ?? []).filter((id) => id.toLowerCase().includes(q.toLowerCase())).slice(0, 200);
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(13,13,13,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
@@ -289,14 +307,24 @@ function GymPicker({ onClose, onPick }: { onClose: () => void; onPick: (id: stri
             <span style={{ fontSize: "1rem", fontWeight: weight.bold, color: t.n0 }}>Load a real gym task</span>
             <span onClick={onClose} style={{ cursor: "pointer", color: t.n3, display: "inline-flex" }}><Icon name="close" size={18} /></span>
           </div>
-          <div style={{ marginTop: 4, fontSize: "0.8125rem", color: t.n2 }}>Runs the oracle agent live in the gym, then loads the real run + its milestones to review. {all == null ? "Loading catalog…" : `${all.length} tasks.`}</div>
-          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter tasks — e.g. buy, refund, subscription…" style={{ marginTop: 12, width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, fontFamily: t.fontPrimary, fontSize: "0.875rem", color: t.n0, outline: "none" }} />
+          <div style={{ marginTop: 4, fontSize: "0.8125rem", color: t.n2 }}>Runs the oracle agent live in the gym, then loads the real run + its milestones to review. {connected === false ? "" : all == null ? "Loading catalog…" : `${all.length} tasks.`}</div>
+          {connected !== false && (
+            <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter tasks — e.g. buy, refund, subscription…" style={{ marginTop: 12, width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, fontFamily: t.fontPrimary, fontSize: "0.875rem", color: t.n0, outline: "none" }} />
+          )}
         </div>
         <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
-          {all == null ? (
+          {connected === false ? (
+            <div style={{ padding: "28px 24px", textAlign: "center" }}>
+              <div style={{ fontSize: "0.9rem", fontWeight: weight.bold, color: t.n0 }}>Live gym not connected</div>
+              <div style={{ margin: "8px auto 0", maxWidth: 440, fontSize: "0.82rem", color: t.n2, lineHeight: 1.55 }}>
+                The 312 live gym tasks need a running gym server (set <span style={{ fontFamily: t.fontMono, fontSize: "0.76rem" }}>GYM_URL</span> for a hosted deploy). Everything else — the sample tasks, the correction &amp; re-run flow, the 5-level verifier suite, scoring, and persistence — works without it.
+              </div>
+              <span onClick={onClose} style={{ display: "inline-block", marginTop: 16, padding: "8px 16px", borderRadius: t.radiusLg, background: t.primary6, color: t.n9, fontSize: "0.82rem", fontWeight: weight.semibold, cursor: "pointer" }}>Back to the sample tasks</span>
+            </div>
+          ) : all == null ? (
             <div style={{ padding: 24, textAlign: "center", color: t.n3, fontSize: "0.85rem" }}>Fetching the gym catalog…</div>
           ) : list.length === 0 ? (
-            <div style={{ padding: 24, textAlign: "center", color: t.n3, fontSize: "0.85rem" }}>{all.length === 0 ? "Gym not reachable." : "No tasks match."}</div>
+            <div style={{ padding: 24, textAlign: "center", color: t.n3, fontSize: "0.85rem" }}>{all.length === 0 ? "No gym tasks available." : "No tasks match."}</div>
           ) : (
             list.map((id) => (
               <div key={id} onClick={() => onPick(id)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 20px", cursor: "pointer", fontSize: "0.84rem", color: t.n1, borderBottom: `1px solid ${t.n8}` }}
@@ -335,6 +363,7 @@ export function TaskReview() {
   const [gymLoading, setGymLoading] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [gymError, setGymError] = useState<string | null>(null);
+  const [freshNonce, setFreshNonce] = useState(0); // >0 forces a new session on remount ("New annotation")
 
   useEffect(() => {
     let alive = true;
@@ -343,6 +372,8 @@ export function TaskReview() {
   }, []);
 
   const taskId = tasks[index]?.id ?? TASK_ID;
+  // A new task (or entering/exiting the gym) resets the fresh-start intent.
+  useEffect(() => { setFreshNonce(0); }, [taskId, gymData?.task.id]);
   useEffect(() => {
     let alive = true;
     setData(null);
@@ -381,7 +412,13 @@ export function TaskReview() {
   return (
     <>
       {effective ? (
-        <ReviewScreen key={gymData ? `gym:${gymData.task.id}` : taskId} data={effective} nav={nav} />
+        <ReviewScreen
+          key={`${gymData ? `gym:${gymData.task.id}` : taskId}#${freshNonce}`}
+          data={effective}
+          nav={nav}
+          startFresh={freshNonce > 0}
+          onStartNew={() => setFreshNonce((n) => n + 1)}
+        />
       ) : (
         <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: t.n3, fontFamily: t.fontPrimary }}>Loading task…</div>
       )}

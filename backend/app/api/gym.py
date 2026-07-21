@@ -137,8 +137,11 @@ def gym_run_review(task_id: str, body: RunReviewBody, db: Session = Depends(get_
     review = gym_review.to_review(r, task_id, body.agent)
     try:
         review["sessionId"] = _persist_gym_review(db, task_id, body.agent, r, review)
-    except Exception:  # noqa: BLE001 — persistence is best-effort; the review still loads
+        review["persisted"] = True
+    except Exception as exc:  # noqa: BLE001 — the review still loads, but say so honestly
         db.rollback()
+        review["persisted"] = False
+        review["persistError"] = type(exc).__name__
     return review
 
 

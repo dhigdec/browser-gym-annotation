@@ -26,7 +26,9 @@ from app.models import (
     ReviewSession,
     Submission,
     Task,
+    Trajectory,
     TrajectoryBranch,
+    TrajectoryStep,
     Verifier,
     VerifierSuite,
 )
@@ -43,6 +45,7 @@ _STATUSES = _OPEN | {"submitted"}
 
 class OpenSessionBody(BaseModel):
     annotatorEmail: str | None = None
+    fresh: bool = False  # start a NEW session instead of resuming the latest (e.g. after submit)
 
 
 class PatchSessionBody(BaseModel):
@@ -172,12 +175,36 @@ def _run_benchmark(db: Session, s: ReviewSession, corrected: bool, overrides: se
     _audit(
         db, "", "benchmark.execute", str(s.id),
         {"reward": out["reward"], "executed": out["executed"], "overridden": out["overridden"], "corrected": corrected},
+        session_id=s.id,
     )
     return out
 
 
-def _audit(db: Session, actor: str, action: str, target: str, meta: dict | None = None) -> None:
-    db.add(AuditLog(actor=actor, action=action, target=target, meta=meta or {}))
+def _audit(
+    db: Session, actor: str, action: str, target: str, meta: dict | None = None, session_id: UUID | None = None
+) -> None:
+    db.add(AuditLog(session_id=session_id, actor=actor, action=action, target=target, meta=meta or {}))
+
+
+def _record_trajectory(db: Session, s: ReviewSession, fixture: dict) -> None:
+    """Record the recorded run under review as real Trajectory + step rows, so a
+    normal (non-gym) session has the same auditable task→session→trajectory chain
+    the gym path produces. The fixture trace is the pre-correction agent run."""
+    steps = fixture.get("steps", [])
+    traj = Trajectory(session_id=s.id, agent=fixture.get("task", {}).get("agent", "recorded"), seed=0, source="fixture")
+    db.add(traj)
+    db.flush()
+    for st in steps:
+        db.add(
+            TrajectoryStep(
+                trajectory_id=traj.id,
+                idx=st.get("idx", 0),
+                action_type=st.get("type", ""),
+                description=st.get("description", ""),
+                tab_id=st.get("tabId", ""),
+                screenshot_url=st.get("image", "") or "",
+            )
+        )
 
 
 def _snapshot(db: Session, s: ReviewSession) -> dict:
@@ -263,21 +290,27 @@ def _branch_for(correction: str, mode: str, from_step: int, fixture: dict) -> tu
 
 @router.post("/tasks/{external_id}/sessions")
 def open_session(external_id: str, body: OpenSessionBody, db: Session = Depends(get_db)) -> dict:
-    """Resume the annotator's most recent session for this task, or start one."""
-    if task_fixture(external_id) is None:
+    """Resume the annotator's most recent session for this task, or start one.
+    `fresh=true` always starts a NEW session (used to re-annotate a task whose
+    latest session is already submitted)."""
+    fixture = task_fixture(external_id)
+    if fixture is None:
         raise HTTPException(status_code=404, detail="task not found")
     task = _seed_task(db, external_id)
     ann = _default_annotator(db, body.annotatorEmail)
-    existing = db.scalar(
-        select(ReviewSession)
-        .where(ReviewSession.task_id == task.id, ReviewSession.annotator_id == ann.id)
-        .order_by(ReviewSession.created_at.desc())
-    )
+    existing = None
+    if not body.fresh:
+        existing = db.scalar(
+            select(ReviewSession)
+            .where(ReviewSession.task_id == task.id, ReviewSession.annotator_id == ann.id)
+            .order_by(ReviewSession.created_at.desc())
+        )
     if existing is None:
         existing = ReviewSession(task_id=task.id, annotator_id=ann.id, status="draft")
         db.add(existing)
         db.flush()
-        _audit(db, ann.email, "session.open", str(existing.id))
+        _record_trajectory(db, existing, fixture)  # the auditable task→session→trajectory chain
+        _audit(db, ann.email, "session.open", str(existing.id), session_id=existing.id)
     db.commit()
     db.refresh(existing)
     return _snapshot(db, existing)
@@ -296,10 +329,10 @@ def patch_session(session_id: UUID, body: PatchSessionBody, db: Session = Depend
             raise HTTPException(status_code=400, detail=f"bad status {body.status!r}")
         if s.status != body.status:
             s.status = body.status
-            _audit(db, "", "session.status", str(s.id), {"status": body.status})
+            _audit(db, "", "session.status", str(s.id), {"status": body.status}, session_id=s.id)
     if body.rerunFrom is not None:
         s.rerun_from = body.rerunFrom
-        _audit(db, "", "session.correct", str(s.id), {"rerunFrom": body.rerunFrom})
+        _audit(db, "", "session.correct", str(s.id), {"rerunFrom": body.rerunFrom}, session_id=s.id)
     db.commit()
     db.refresh(s)
     return _snapshot(db, s)
@@ -329,7 +362,7 @@ def rerun(session_id: UUID, body: RerunBody, db: Session = Depends(get_db)) -> d
     # Correcting re-forks the trace and re-locks the review (spec §3.25).
     s.rerun_from = body.fromStep
     s.status = "draft"
-    _audit(db, "", "agent.rerun", str(s.id), {"fromStep": body.fromStep, "mode": actual_mode, "correction": body.correction[:200]})
+    _audit(db, "", "agent.rerun", str(s.id), {"fromStep": body.fromStep, "mode": actual_mode, "correction": body.correction[:200]}, session_id=s.id)
     db.commit()
     return {"fromStep": body.fromStep, "mode": actual_mode, "steps": branch_steps}
 
@@ -357,7 +390,7 @@ def save_suite(session_id: UUID, body: SaveSuiteBody, db: Session = Depends(get_
                 added_by_human=v.addedByHuman,
             )
         )
-    _audit(db, "", "suite.save", str(suite.id), {"version": version, "count": len(body.verifiers)})
+    _audit(db, "", "suite.save", str(suite.id), {"version": version, "count": len(body.verifiers)}, session_id=s.id)
     db.commit()
     return _snapshot(db, s)
 
@@ -391,6 +424,10 @@ def submit(session_id: UUID, body: SubmitBody, db: Session = Depends(get_db)) ->
     reward from the latest benchmark run of the persisted suite — never the
     client-asserted `body.reward`. A benchmark must have been run first."""
     s = _get_session(db, session_id)
+    if s.status == "submitted":
+        # Immutable once submitted — start a fresh session to re-annotate
+        # (POST /tasks/{id}/sessions with fresh=true) rather than superseding.
+        raise HTTPException(status_code=409, detail="session already submitted — start a new session to re-annotate")
     suite = _latest_suite(db, s.id)
     if suite is None:
         raise HTTPException(status_code=409, detail="no verifier suite to submit")
@@ -423,6 +460,7 @@ def submit(session_id: UUID, body: SubmitBody, db: Session = Depends(get_db)) ->
             "override": body.override,
             "kind": kind,
         },
+        session_id=s.id,
     )
     db.commit()
     return _snapshot(db, s)
