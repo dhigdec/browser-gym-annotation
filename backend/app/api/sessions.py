@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.api.tasks import _FIXTURE
 from app.db import get_db
+from app.verify import evaluate
 from app.models import (
     Annotator,
     AuditLog,
@@ -64,6 +65,12 @@ class SaveSuiteBody(BaseModel):
 class BenchmarkBody(BaseModel):
     reward: int
     results: dict = {}
+
+
+class RunBody(BaseModel):
+    corrected: bool = False
+    verifiers: list[dict] = []
+    overrides: list[str] = []
 
 
 class SubmitBody(BaseModel):
@@ -253,6 +260,25 @@ def save_suite(session_id: UUID, body: SaveSuiteBody, db: Session = Depends(get_
     _audit(db, "", "suite.save", str(suite.id), {"version": version, "count": len(body.verifiers)})
     db.commit()
     return _snapshot(db, s)
+
+
+@router.post("/sessions/{session_id}/run")
+def run_verifiers(session_id: UUID, body: RunBody, db: Session = Depends(get_db)) -> dict:
+    """Execute the verifier suite for real against the captured DOM + ground-truth
+    state + trace, record the run, and return the true per-verifier results."""
+    s = _get_session(db, session_id)
+    out = evaluate(body.verifiers, _FIXTURE, body.corrected, set(body.overrides))
+    suite = _latest_suite(db, s.id)
+    if suite is not None:
+        db.add(BenchmarkRun(suite_id=suite.id, reward=out["reward"], results=out["results"]))
+    if s.status in _OPEN:
+        s.status = "benchmark_run"
+    _audit(
+        db, "", "benchmark.execute", str(s.id),
+        {"reward": out["reward"], "executed": out["executed"], "overridden": out["overridden"]},
+    )
+    db.commit()
+    return out
 
 
 @router.post("/sessions/{session_id}/benchmark")

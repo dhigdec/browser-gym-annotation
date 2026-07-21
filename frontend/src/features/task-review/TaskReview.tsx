@@ -4,14 +4,14 @@ import {
   fetchReview,
   openSession,
   patchSession,
-  recordBenchmark,
+  runVerifiers,
   saveSuite,
   submitSession,
 } from "../../lib/api";
 import type { ReviewData, Verifier } from "../../lib/types";
 import {
-  benchmarkResults,
   makeInitialState,
+  offlineResults,
   reducer,
   reward,
   runSummary,
@@ -98,7 +98,6 @@ function ReviewScreen({ data }: { data: ReviewData }) {
   // transition to the backend so the annotator's work survives a refresh.
   const statusRef = useRef<string>("draft");
   const suiteSigRef = useRef<string>("");
-  const benchPostedRef = useRef(false);
   const submittedRef = useRef(false);
   const rerunRef = useRef<number | null>(null);
 
@@ -110,24 +109,41 @@ function ReviewScreen({ data }: { data: ReviewData }) {
       // Seed the sync refs to the restored state so we don't echo it back.
       statusRef.current = snap.status;
       rerunRef.current = snap.rerunFrom;
-      benchPostedRef.current = snap.status === "benchmark_run" || snap.status === "submitted";
       submittedRef.current = snap.status === "submitted";
+      const results = (snap.lastBenchmark?.results as Record<string, string>) ?? {};
       const restored = reducer(makeInitialState(data), {
         t: "hydrate",
         status: snap.status,
         rerunFrom: snap.rerunFrom,
+        results,
       });
       suiteSigRef.current = restored.verifiersGenerated
         ? JSON.stringify(verifierPayloads(restored))
         : "";
       if (snap.status !== "draft" || snap.rerunFrom != null) {
-        dispatch({ t: "hydrate", status: snap.status, rerunFrom: snap.rerunFrom });
+        dispatch({ t: "hydrate", status: snap.status, rerunFrom: snap.rerunFrom, results });
       }
     });
     return () => {
       alive = false;
     };
   }, [data.task.id]);
+
+  // Run the verifier suite through the backend execution engine (M5). Falls
+  // back to a flag-derived result only when the backend is unreachable.
+  const runBenchmark = async () => {
+    const verifiers = verifierPayloads(state);
+    const overrides = Object.keys(state.overrides);
+    const corrected = state.rerunFrom != null;
+    if (sessionId) {
+      const out = await runVerifiers(sessionId, { corrected, verifiers, overrides });
+      if (out) {
+        dispatch({ t: "benchmarkComplete", results: out.results });
+        return;
+      }
+    }
+    dispatch({ t: "benchmarkComplete", results: offlineResults(state) });
+  };
 
   // Gate-status transitions (draft → steps_approved → verifiers_generated).
   const status = sessionStatus(state);
@@ -156,18 +172,6 @@ function ReviewScreen({ data }: { data: ReviewData }) {
     void saveSuite(sessionId, verifierPayloads(state));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, suiteSig]);
-
-  // Benchmark — record one run on each false→true edge (each re-run).
-  useEffect(() => {
-    if (!sessionId) return;
-    if (state.benchmarkRun && !benchPostedRef.current) {
-      benchPostedRef.current = true;
-      void recordBenchmark(sessionId, reward(state) ?? 0, benchmarkResults(state));
-    } else if (!state.benchmarkRun) {
-      benchPostedRef.current = false;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, state.benchmarkRun]);
 
   // Submission — write the dataset row once.
   useEffect(() => {
@@ -235,7 +239,7 @@ function ReviewScreen({ data }: { data: ReviewData }) {
           onAddVerifier={onAddVerifier}
           onEditVerifier={(id, assertion, code) => dispatch({ t: "editVerifier", id, assertion, code })}
           onOverride={(id) => dispatch({ t: "override", id })}
-          onRun={() => dispatch({ t: "runBenchmark" })}
+          onRun={runBenchmark}
           onSubmit={() => dispatch({ t: "submit" })}
         />
       </div>

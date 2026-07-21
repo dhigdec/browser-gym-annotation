@@ -26,6 +26,7 @@ export function makeInitialState(data: ReviewData): ReviewState {
     activeLevel: "ui",
     added: [],
     edits: {},
+    results: {},
   };
 }
 
@@ -42,7 +43,7 @@ export type Action =
   | { t: "verifyStep" }
   | { t: "approveRemaining" }
   | { t: "generate" }
-  | { t: "runBenchmark" }
+  | { t: "benchmarkComplete"; results: Record<string, string> }
   | { t: "correctAndRerun"; fromStep: number }
   | { t: "setLevel"; level: VerifierLevel }
   | { t: "addVerifier"; verifier: Verifier }
@@ -50,7 +51,7 @@ export type Action =
   | { t: "editVerifier"; id: string; assertion: string; code: string }
   | { t: "override"; id: string }
   | { t: "submit" }
-  | { t: "hydrate"; status: PersistStatus; rerunFrom: number | null };
+  | { t: "hydrate"; status: PersistStatus; rerunFrom: number | null; results: Record<string, string> };
 
 export type PersistStatus =
   | "draft"
@@ -81,9 +82,9 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
     case "approveRemaining":
       return { ...s, verifiedThrough: total, stepsApproved: true };
     case "generate":
-      return s.stepsApproved ? { ...s, verifiersGenerated: true, benchmarkRun: false } : s;
-    case "runBenchmark":
-      return s.verifiersGenerated ? { ...s, benchmarkRun: true } : s;
+      return s.stepsApproved ? { ...s, verifiersGenerated: true, benchmarkRun: false, results: {} } : s;
+    case "benchmarkComplete":
+      return s.verifiersGenerated ? { ...s, benchmarkRun: true, results: a.results } : s;
     case "correctAndRerun":
       return {
         ...s,
@@ -91,6 +92,7 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
         verifiedThrough: total,
         stepsApproved: true,
         benchmarkRun: false,
+        results: {},
         overrides: {},
         submitted: false,
         step: a.fromStep - 1,
@@ -98,11 +100,11 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
     case "setLevel":
       return { ...s, activeLevel: a.level };
     case "addVerifier":
-      return { ...s, added: [...s.added, a.verifier], benchmarkRun: false, submitted: false };
+      return { ...s, added: [...s.added, a.verifier], benchmarkRun: false, results: {}, submitted: false };
     case "removeVerifier":
-      return { ...s, added: s.added.filter((v) => v.id !== a.id), benchmarkRun: false };
+      return { ...s, added: s.added.filter((v) => v.id !== a.id), benchmarkRun: false, results: {} };
     case "editVerifier":
-      return { ...s, edits: { ...s.edits, [a.id]: { assertion: a.assertion, code: a.code } }, benchmarkRun: false, submitted: false };
+      return { ...s, edits: { ...s.edits, [a.id]: { assertion: a.assertion, code: a.code } }, benchmarkRun: false, results: {}, submitted: false };
     case "override":
       return { ...s, overrides: { ...s.overrides, [a.id]: true }, submitted: false };
     case "submit":
@@ -124,6 +126,7 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
         verifiedThrough: approved ? vs.length : s.verifiedThrough,
         step: Math.min(step, last),
         activeTabId: vs[Math.min(step, last)]?.tabId ?? s.activeTabId,
+        results: a.results,
       };
     }
     default:
@@ -156,8 +159,10 @@ export function allVerifiers(s: ReviewState): Verifier[] {
 export function verifierState(s: ReviewState, v: Verifier): MeterState {
   if (!s.benchmarkRun) return "pending";
   if (v.placeholder) return "fail"; // empty/placeholder never passes
-  if (v.failsUntilCorrected && s.rerunFrom == null && !s.overrides[v.id]) return "fail";
-  return "pass";
+  if (s.overrides[v.id]) return "pass"; // human-attested (stamped)
+  const r = s.results[v.id]; // real result from the execution engine
+  if (r === "pass" || r === "fail" || r === "pending") return r as MeterState;
+  return "fail"; // ran, but no result for this check → unproven, fails closed
 }
 
 export function reward(s: ReviewState): number | null {
@@ -193,22 +198,29 @@ export function sessionStatus(s: ReviewState): PersistStatus {
   return "draft";
 }
 
-/** The current suite flattened for the save-suite endpoint. */
+/** The current suite flattened for the save-suite / run endpoints. */
 export function verifierPayloads(s: ReviewState) {
   return allVerifiers(s).map((v) => ({
     id: v.id,
     level: v.level as string,
     assertion: v.assertion,
     code: v.code,
+    check: v.check ?? null,
     failsUntilCorrected: !!v.failsUntilCorrected,
     placeholder: !!v.placeholder,
     addedByHuman: v.id.startsWith("add-"),
   }));
 }
 
-/** Per-verifier pass/fail for the benchmark record. */
-export function benchmarkResults(s: ReviewState): Record<string, string> {
+/** Offline fallback when the execution engine is unreachable — flag-derived
+ *  pass/fail (no real evaluation). The API path uses the backend executor. */
+export function offlineResults(s: ReviewState): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const v of allVerifiers(s)) out[v.id] = verifierState(s, v);
+  for (const v of allVerifiers(s)) {
+    if (v.placeholder) out[v.id] = "fail";
+    else if (s.overrides[v.id]) out[v.id] = "pass";
+    else if (v.failsUntilCorrected && s.rerunFrom == null) out[v.id] = "fail";
+    else out[v.id] = "pass";
+  }
   return out;
 }

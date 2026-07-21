@@ -26,6 +26,8 @@ export interface Verifier {
   code: string;
   failsUntilCorrected?: boolean;
   placeholder?: boolean;
+  /** Executable check IR (M5) — evaluated by the backend engine. */
+  check?: Record<string, unknown>;
 }
 
 // ---- API shape (returned by the backend) ----------------------------------
@@ -105,4 +107,6 @@ export interface ReviewState {
   added: Verifier[];
   /** in-place edits to any verifier (generated or added), keyed by id. */
   edits: Record<string, { assertion: string; code: string }>;
+  /** real per-verifier results from the last benchmark run (M5), keyed by id. */
+  results: Record<string, string>;
 }

@@ -109,12 +109,19 @@ export function saveSuite(sid: string, verifiers: VerifierPayload[]): Promise<vo
   return send(`/api/sessions/${sid}/suite`, "PUT", { verifiers });
 }
 
-export function recordBenchmark(
+export interface RunResult {
+  results: Record<string, string>;
+  reward: number;
+  executed: number;
+  overridden: number;
+}
+
+/** Execute the verifier suite server-side against the real DOM + state + trace. */
+export function runVerifiers(
   sid: string,
-  reward: number,
-  results: Record<string, string>,
-): Promise<SessionSnapshot | null> {
-  return post<SessionSnapshot>(`/api/sessions/${sid}/benchmark`, { reward, results });
+  body: { corrected: boolean; verifiers: unknown[]; overrides: string[] },
+): Promise<RunResult | null> {
+  return post<RunResult>(`/api/sessions/${sid}/run`, body);
 }
 
 export function submitSession(

@@ -1,0 +1,130 @@
+"""Verifier execution engine (M5).
+
+Replaces the frontend's flag-derived pass/fail with real evaluation of a small
+verifier IR against real context: the captured DOM snapshots, the ground-truth
+final backend state, and the action trace. A verifier only passes if its check
+actually holds; an empty/unexecutable check fails closed (unproven never passes).
+
+In the full system the final state comes from the gym after the (re-)run; here
+it is a fixture, but the *evaluation* is genuine — the reward flips 0→1 because
+the corrected state really satisfies the safety predicate the original did not.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any
+
+_SNAP_DIR = Path(__file__).resolve().parent / "snapshots"
+_TAG = re.compile(r"<[^>]+>")
+_WS = re.compile(r"\s+")
+
+
+def _snapshot_text(key: str) -> str | None:
+    if not key.replace("_", "").isalnum():
+        return None
+    f = _SNAP_DIR / f"{key}.html"
+    if not f.exists():
+        return None
+    return _WS.sub(" ", _TAG.sub(" ", f.read_text(encoding="utf-8"))).lower()
+
+
+def _get(state: dict, path: str) -> Any:
+    cur: Any = state
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def _num(x: Any) -> float | None:
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def visible_trace(fixture: dict, corrected: bool) -> list[dict]:
+    """Mirror the frontend's visibleSteps: the corrected fork replaces the tail
+    after the error step."""
+    steps = fixture.get("steps", [])
+    if not corrected:
+        return steps
+    ei = next((i for i, s in enumerate(steps) if s.get("type") == "error"), len(steps) - 1)
+    return steps[: ei + 1] + fixture.get("correctedTail", [])
+
+
+def _eval_check(check: dict, ctx: dict) -> bool:
+    kind = check.get("kind")
+    state = ctx["state"]
+
+    if kind == "dom_contains":
+        text = _snapshot_text(check.get("snapshot", ""))
+        return bool(text) and check.get("needle", "").lower() in text
+    if kind == "dom_absent":
+        text = _snapshot_text(check.get("snapshot", ""))
+        return text is not None and check.get("needle", "").lower() not in text
+    if kind == "state_true":
+        return _get(state, check["path"]) is True
+    if kind == "state_false":
+        return _get(state, check["path"]) is False
+    if kind == "state_eq":
+        return _get(state, check["path"]) == check.get("value")
+    if kind == "state_lte":
+        v = _num(_get(state, check["path"]))
+        return v is not None and v <= float(check["value"])
+    if kind == "judge_state":
+        return _get(state, check["path"]) == _get(state, check["equalsPath"])
+    if kind == "trace_max_steps":
+        return len(ctx["trace"]) <= int(check["n"])
+    if kind == "trace_hosts_subset":
+        allowed = ctx["allowed_tabs"]
+        return all(s.get("tabId") in allowed for s in ctx["trace"])
+    if kind == "trace_action_count":
+        want_type = check.get("type")
+        want_tab = check.get("tab")
+        n = sum(
+            1
+            for s in ctx["trace"]
+            if s.get("type") == want_type and (want_tab is None or s.get("tabId") == want_tab)
+        )
+        return n >= int(check.get("min", 1))
+    # Unknown/unsupported kind → cannot prove it → fail closed.
+    return False
+
+
+def evaluate(verifiers: list[dict], fixture: dict, corrected: bool, overrides: set[str]) -> dict:
+    """Return {results: {id: 'pass'|'fail'}, reward: 0|1, executed: int, overridden: int}."""
+    state_key = "corrected" if corrected else "original"
+    ctx = {
+        "state": fixture.get("finalState", {}).get(state_key, {}),
+        "trace": visible_trace(fixture, corrected),
+        "allowed_tabs": {t["id"] for t in fixture.get("tabs", [])},
+    }
+    results: dict[str, str] = {}
+    executed = 0
+    for v in verifiers:
+        vid = v.get("id")
+        code = (v.get("code") or "").strip()
+        placeholder = v.get("placeholder") or not code
+        if vid in overrides:
+            results[vid] = "pass"  # human-attested, stamped elsewhere
+            continue
+        if placeholder:
+            results[vid] = "fail"  # empty/placeholder never passes
+            continue
+        check = v.get("check")
+        if not isinstance(check, dict):
+            results[vid] = "fail"  # unexecutable (e.g. free-text human check) → attest via override
+            continue
+        executed += 1
+        results[vid] = "pass" if _eval_check(check, ctx) else "fail"
+    reward = 1 if verifiers and all(r == "pass" for r in results.values()) else 0
+    return {
+        "results": results,
+        "reward": reward,
+        "executed": executed,
+        "overridden": len([v for v in verifiers if v.get("id") in overrides]),
+    }
