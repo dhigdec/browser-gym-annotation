@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { Icon, t, weight } from "../../ds";
 import {
+  driveForwardGym,
   fetchGymStatus,
   fetchGymTasks,
   fetchReview,
@@ -89,6 +90,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
   const [correcting, setCorrecting] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [promptOverride, setPromptOverride] = useState<string | null>(null);
+  const [driving, setDriving] = useState<null | "queued" | "running">(null);
 
   useEffect(() => {
     if (!state.playing) return;
@@ -215,6 +217,22 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
         <SectionHeader n={1} title="Review & correct the agent run" subtitle="Verify each step; correct any step to re-run the agent from that state." right={
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <SaveBadge sessionId={sessionId} status={status} />
+            {data.source === "gym" && data.gymResume && (
+              <span
+                onClick={driving ? undefined : async () => {
+                  setDriving("queued");
+                  const res = await driveForwardGym(
+                    { taskId: data.task.id, seed: data.gymResume!.seed, worldState: data.gymResume!.worldState, resumeUrl: data.gymResume!.finalUrl || "/", agent: "llm" },
+                    { onStatus: (s) => setDriving(s === "done" || s === "error" ? null : s) },
+                  );
+                  setDriving(null);
+                  if (res) dispatch({ t: "gymResumed", reward: res.reward });
+                }}
+                title="Load the corrected state and let a live agent continue the task in the gym (slow)"
+                style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, background: t.n9, color: driving ? t.n3 : t.primary6, fontSize: "0.75rem", fontWeight: weight.semibold, cursor: driving ? "default" : "pointer", whiteSpace: "nowrap" }}>
+                {driving ? (driving === "queued" ? "Queued…" : "Agent driving…") : "⚡ Drive forward (live agent)"}
+              </span>
+            )}
             {(state.submitted || status === "submitted") && (
               <span onClick={onStartNew} title="This session is submitted and locked — start a fresh annotation of this task"
                 style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, background: t.n9, color: t.primary6, fontSize: "0.75rem", fontWeight: weight.semibold, cursor: "pointer", whiteSpace: "nowrap" }}>

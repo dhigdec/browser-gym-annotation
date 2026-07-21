@@ -202,6 +202,39 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export interface ResumeResult { score: number; success: boolean; reward: number }
 
+/** Drive-forward resume (async): load the corrected world (+ edits) and drive a
+ *  LIVE agent FORWARD from the mid-episode URL in the gym, then verify. Slow +
+ *  (for LLM agents) stochastic. Submits to the job queue and polls to the driven
+ *  verdict. onStatus fires on each phase change. */
+export async function driveForwardGym(
+  body: {
+    taskId: string;
+    seed: number;
+    worldState?: Record<string, unknown>;
+    edits?: Record<string, unknown>;
+    resumeUrl: string;
+    resumeStep?: number;
+    agent?: string;
+  },
+  opts?: { onStatus?: (s: GymJob["status"]) => void; intervalMs?: number; timeoutMs?: number },
+): Promise<{ reward: number } | null> {
+  const out = await post<{ jobId: string }>("/api/gym/resume-run", body);
+  const jobId = out?.jobId;
+  if (!jobId) return null;
+  const interval = opts?.intervalMs ?? 2000;
+  const deadline = Date.now() + (opts?.timeoutMs ?? 320_000);
+  let last: GymJob["status"] | null = null;
+  while (Date.now() < deadline) {
+    await sleep(interval);
+    const j = await pollGymJob(jobId);
+    if (!j) continue;
+    if (j.status !== last) { last = j.status; opts?.onStatus?.(j.status); }
+    if (j.status === "done") return { reward: (j.review as { gymReward?: number } | undefined)?.gymReward ?? 0 };
+    if (j.status === "error") return null;
+  }
+  return null;
+}
+
 /** Resume a gym task from its corrected state: load the captured world (+ optional
  *  dot-path edits) into the gym and replay the trajectory → REAL milestone verdict. */
 export async function resumeGymReview(body: {
