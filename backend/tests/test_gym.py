@@ -57,6 +57,28 @@ def test_run_review_is_async_and_pollable(client, monkeypatch):
     assert client.get("/api/gym/jobs/does-not-exist").status_code == 404
 
 
+def test_apply_edits_dot_path():
+    from app.api.gym import _apply_edits
+
+    base = {"shop": {"orders": {"o1": {"payment_id": "amex"}}}}
+    out = _apply_edits(base, {"shop.orders.o1.payment_id": "personal", "shop.new": 5})
+    assert out["shop"]["orders"]["o1"]["payment_id"] == "personal"
+    assert out["shop"]["new"] == 5
+    assert base["shop"]["orders"]["o1"]["payment_id"] == "amex"  # original untouched (deep-copied)
+
+
+def test_resume_returns_real_verdict(client, monkeypatch):
+    monkeypatch.setattr("app.gym_client.resume_verify", lambda *a, **k: {"score": 1.0, "success": True})
+    r = client.post("/api/gym/resume", json={"taskId": "A1/x", "seed": 0, "worldState": {"shop": {}}, "urlTrail": ["/"]})
+    assert r.status_code == 200
+    assert r.json()["reward"] == 1 and r.json()["success"] is True
+
+
+def test_resume_502_when_gym_unreachable(client, monkeypatch):
+    monkeypatch.setattr("app.gym_client.resume_verify", lambda *a, **k: None)
+    assert client.post("/api/gym/resume", json={"taskId": "A1/x", "seed": 0}).status_code == 502
+
+
 def test_job_store_runs_and_captures_outcomes():
     import time
 

@@ -81,6 +81,7 @@ def to_review(run: dict, task_id: str, agent: str) -> dict:
             "description": _humanize(s),
             "image": f"/api/gym/screenshot?path={sp}" if sp else None,
             "errorMsg": str(s.get("action_error")) if err else None,
+            "url": s.get("url_after") or "",
         })
 
     verifiers = []
@@ -126,4 +127,11 @@ def to_review(run: dict, task_id: str, agent: str) -> dict:
         "verifiers": verifiers,
         "gymReward": reward,
         "source": "gym",
+        # Everything needed to resume this episode from a corrected state (the
+        # live world is attached by the run-review job as gymResume.worldState).
+        "gymResume": {
+            "seed": int(run.get("seed", 0)),
+            "urlTrail": [s.get("url_after") or "" for s in steps_in],
+            "finalUrl": t.get("final_url") or "",
+        },
     }

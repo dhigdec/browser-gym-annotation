@@ -143,6 +143,7 @@ def _run_review_job(task_id: str, agent: str, seed: int) -> dict:
         raise jobs.JobFailure("run produced no trajectory (task may lack an oracle solver)")
     review = gym_review.to_review(r, task_id, agent)
     review["backendState"] = gym_client.state()  # the REAL post-run world (cart/orders/returns/account)
+    review.setdefault("gymResume", {})["worldState"] = gym_client.world()  # full multi-app world, for resume
     with SessionLocal() as db:
         try:
             review["sessionId"] = _persist_gym_review(db, task_id, agent, r, review)
@@ -169,6 +170,53 @@ def gym_job(job_id: str) -> dict:
     if job is None:
         raise HTTPException(status_code=404, detail="unknown or expired job")
     return job.public()
+
+
+def _apply_edits(state: dict, edits: dict) -> dict:
+    """Apply human corrections as dot-path → value edits onto a copy of the
+    captured world state (e.g. {"shop.orders.ORD_1.payment_id": "pm_personal"})."""
+    import copy
+
+    out = copy.deepcopy(state)
+    for path, value in (edits or {}).items():
+        cur = out
+        parts = path.split(".")
+        for p in parts[:-1]:
+            if isinstance(cur, dict):
+                cur = cur.setdefault(p, {})
+            else:
+                cur = None
+                break
+        if isinstance(cur, dict):
+            cur[parts[-1]] = value
+    return out
+
+
+class ResumeBody(BaseModel):
+    taskId: str
+    seed: int = 0
+    worldState: dict = {}
+    urlTrail: list[str] = []
+    finalUrl: str = ""
+    edits: dict = {}
+
+
+@router.post("/resume")
+def gym_resume(body: ResumeBody) -> dict:
+    """Resume a gym task from a corrected mid-episode state: load the captured
+    world (optionally with human edits) into the gym and replay the trajectory's
+    URL trail, returning the REAL milestone verdict on the corrected world — not
+    a canned tail. This is the genuine 'correct → re-verify' loop for gym tasks."""
+    state = _apply_edits(body.worldState, body.edits) if body.edits else body.worldState
+    verdict = gym_client.resume_verify(body.taskId, body.seed, state, body.urlTrail, body.finalUrl)
+    if verdict is None:
+        raise HTTPException(status_code=502, detail="gym unreachable or resume failed")
+    return {
+        "verdict": verdict,
+        "score": verdict.get("score"),
+        "success": bool(verdict.get("success")),
+        "reward": 1 if verdict.get("success") else 0,
+    }
 
 
 @router.get("/screenshot")

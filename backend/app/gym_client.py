@@ -64,6 +64,29 @@ def run_agent(task_id: str, agent: str = "oracle", seed: int = 0) -> dict | None
     return _req("POST", "/_harness/run_agent", {"agent": agent, "task_id": task_id, "seed": seed}, timeout=260)
 
 
+def load_state(task_id: str, seed: int, state: dict, step: int | None = None) -> dict | None:
+    """Resume the gym from a corrected mid-episode world state (reset-to-seed +
+    overlay). See POST /_harness/load_state."""
+    body: dict = {"task_id": task_id, "seed": seed, "state": state}
+    if step is not None:
+        body["step"] = step
+    return _req("POST", "/_harness/load_state", body)
+
+
+def resume_verify(task_id: str, seed: int, state: dict, url_trail: list[str], final_url: str = "") -> dict | None:
+    """Load a corrected state, then replay /_harness/verify across the trajectory's
+    per-step URLs so path-progression milestones fire, and return the REAL final
+    milestone verdict on the resumed corrected world."""
+    if load_state(task_id, seed, state) is None:
+        return None
+    last = None
+    for i, u in enumerate(url_trail):
+        last = _req("POST", "/_harness/verify", {"url": u or "/", "step": i})
+    tail = final_url or (url_trail[-1] if url_trail else "/")
+    final = _req("POST", "/_harness/verify", {"url": tail, "step": len(url_trail)})
+    return final or last
+
+
 def screenshot(path: str) -> bytes | None:
     """Fetch a per-step screenshot PNG (raw bytes) from the gym."""
     import urllib.parse
