@@ -53,6 +53,7 @@ function UrlBar({ host }: { host: string }) {
         <Icon name="lock" size={13} color={t.green} />
         {host}
       </div>
+      <span style={{ fontSize: "0.6875rem", fontWeight: weight.bold, letterSpacing: "0.06em", textTransform: "uppercase", color: t.n3 }}>Replay</span>
     </div>
   );
 }
