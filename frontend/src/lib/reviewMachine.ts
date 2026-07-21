@@ -87,16 +87,21 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
       return s.stepsApproved ? { ...s, verifiersGenerated: true, benchmarkRun: false, results: {} } : s;
     case "benchmarkComplete":
       return s.verifiersGenerated ? { ...s, benchmarkRun: true, results: a.results } : s;
-    case "correctAndRerun":
+    case "correctAndRerun": {
       // Correcting a step re-forks the trace and RE-LOCKS Section 2 entirely
       // (spec §3.25): the annotator must re-approve, re-generate, and re-run.
       // The re-run steps are auto-marked reviewed (Reviewed N/N, spec §2.3).
+      // The branch length is variable (a live agent may emit any number of
+      // steps), so recompute the total from the incoming branch.
+      const ei = errorIndex(s.data.steps);
+      const tail = a.branch ?? s.data.correctedTail;
+      const newTotal = ei + 1 + tail.length;
       return {
         ...s,
         rerunFrom: a.fromStep,
         branchTail: a.branch,
         rerunMode: a.mode,
-        verifiedThrough: total,
+        verifiedThrough: newTotal,
         stepsApproved: false,
         verifiersGenerated: false,
         benchmarkRun: false,
@@ -105,6 +110,7 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
         submitted: false,
         step: a.fromStep - 1,
       };
+    }
     case "setLevel":
       return { ...s, activeLevel: a.level };
     case "addVerifier":
@@ -159,9 +165,12 @@ export function visibleSteps(s: ReviewState): Step[] {
 
 export function runSummary(s: ReviewState): Metric[] {
   if (s.rerunFrom == null) return s.data.task.runSummary;
-  return s.data.task.runSummary.map((m) =>
-    m.label === "Errors" ? { value: "0", label: "Errors (resolved)", tone: "success" } : m,
-  );
+  const total = visibleSteps(s).length;
+  return s.data.task.runSummary.map((m) => {
+    if (m.label === "Errors") return { value: "0", label: "Errors (resolved)", tone: "success" };
+    if (m.label === "Steps used") return { ...m, value: `${total}/20` };
+    return m;
+  });
 }
 
 export function allVerifiers(s: ReviewState): Verifier[] {
