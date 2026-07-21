@@ -139,6 +139,7 @@ class Verifier(Base):
     __tablename__ = "verifier"
     id: Mapped[UUID] = _pk()
     suite_id: Mapped[UUID] = _fk("verifier_suite.id")
+    ext_id: Mapped[str] = mapped_column(String(64), default="")  # stable authoring id (e.g. "sa1") for result keying
     level: Mapped[str] = mapped_column(String(16))  # ui | backend | semantic | process | safety
     assertion: Mapped[str] = mapped_column(Text)
     code: Mapped[str] = mapped_column(Text)

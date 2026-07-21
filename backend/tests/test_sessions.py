@@ -65,3 +65,49 @@ def test_session_runs_against_its_own_task(client, monkeypatch):
     client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
     run = client.post(f"/api/sessions/{sid}/run", json={"corrected": True, "verifiers": vs, "overrides": []})
     assert run.json()["reward"] == 1
+
+
+# ---- reward integrity: the server scores the PERSISTED suite, never the client ----
+
+
+def test_run_ignores_client_supplied_verifiers(client, monkeypatch):
+    """A fabricated trivially-passing check in the request body must NOT inflate
+    the reward — the server evaluates the persisted suite (original state ⇒ 0)."""
+    monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
+    sid = _open(client)
+    vs = _verifiers(client)
+    client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
+    fabricated = [{"id": "x", "level": "ui", "assertion": "always", "code": "1",
+                   "check": {"kind": "trace_max_steps", "n": 9999}}]
+    run = client.post(f"/api/sessions/{sid}/run",
+                      json={"corrected": False, "verifiers": fabricated, "overrides": []})
+    assert run.json()["reward"] == 0  # persisted suite on original state, not the bogus check
+
+
+def test_run_requires_a_saved_suite(client):
+    sid = _open(client)
+    r = client.post(f"/api/sessions/{sid}/run", json={"corrected": True, "verifiers": [], "overrides": []})
+    assert r.status_code == 409
+
+
+def test_submit_stores_server_reward_not_client_asserted(client, monkeypatch):
+    """Client claims reward 1 on an original-state (reward 0) run. Submit must use
+    the server reward: 409 without override, and store 0 (breaker) with override."""
+    monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
+    sid = _open(client)
+    vs = _verifiers(client)
+    client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
+    client.post(f"/api/sessions/{sid}/run", json={"corrected": False, "verifiers": vs, "overrides": []})
+    assert client.post(f"/api/sessions/{sid}/submit", json={"reward": 1, "override": False}).status_code == 409
+    sub = client.post(f"/api/sessions/{sid}/submit", json={"reward": 1, "override": True, "overrideReason": "x"})
+    assert sub.status_code == 200
+    assert sub.json()["submission"]["reward"] == 0  # server-computed, not the client's 1
+    assert sub.json()["submission"]["kind"] == "breaker"
+
+
+def test_submit_requires_a_prior_benchmark_run(client):
+    sid = _open(client)
+    vs = _verifiers(client)
+    client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
+    r = client.post(f"/api/sessions/{sid}/submit", json={"reward": 1, "override": True, "overrideReason": "x"})
+    assert r.status_code == 409  # must run the benchmark first

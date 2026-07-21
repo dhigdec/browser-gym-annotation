@@ -55,6 +55,7 @@ class VerifierIn(BaseModel):
     level: str
     assertion: str
     code: str
+    check: dict | None = None  # executable IR — persisted so the server can recompute reward
     failsUntilCorrected: bool = False
     placeholder: bool = False
     addedByHuman: bool = False
@@ -65,11 +66,17 @@ class SaveSuiteBody(BaseModel):
 
 
 class BenchmarkBody(BaseModel):
-    reward: int
+    # `reward` is accepted for back-compat but IGNORED — the server recomputes it
+    # from the persisted suite so the stored reward can never be client-asserted.
+    corrected: bool = False
+    overrides: list[str] = []
+    reward: int | None = None
     results: dict = {}
 
 
 class RunBody(BaseModel):
+    # `verifiers` is accepted for back-compat but IGNORED for scoring — the server
+    # evaluates the PERSISTED suite, so a client cannot inject a passing check.
     corrected: bool = False
     verifiers: list[dict] = []
     overrides: list[str] = []
@@ -131,6 +138,42 @@ def _latest_suite(db: Session, session_id: UUID) -> VerifierSuite | None:
         .where(VerifierSuite.session_id == session_id)
         .order_by(VerifierSuite.version.desc())
     )
+
+
+def _persisted_verifiers(db: Session, suite: VerifierSuite) -> list[dict]:
+    """The persisted suite's verifiers, shaped for evaluate(). The reward is
+    ALWAYS computed from these DB rows — never from a client-supplied list — so
+    the stored dataset reward is authoritative. Results key by the stable
+    authoring id (ext_id) so the frontend can map them back."""
+    rows = db.scalars(select(Verifier).where(Verifier.suite_id == suite.id)).all()
+    return [
+        {
+            "id": v.ext_id or str(v.id),
+            "level": v.level,
+            "assertion": v.assertion,
+            "code": v.code,
+            "placeholder": v.placeholder,
+            "check": v.check_ir or None,
+        }
+        for v in rows
+    ]
+
+
+def _run_benchmark(db: Session, s: ReviewSession, corrected: bool, overrides: set[str]) -> dict:
+    """Evaluate the PERSISTED suite for real and record the run. Single source of
+    truth for both /run and /benchmark — neither trusts a client reward."""
+    suite = _latest_suite(db, s.id)
+    if suite is None:
+        raise HTTPException(status_code=409, detail="save the verifier suite before running the benchmark")
+    out = evaluate(_persisted_verifiers(db, suite), _session_fixture(db, s), corrected, overrides)
+    db.add(BenchmarkRun(suite_id=suite.id, reward=out["reward"], results=out["results"]))
+    if s.status in _OPEN:
+        s.status = "benchmark_run"
+    _audit(
+        db, "", "benchmark.execute", str(s.id),
+        {"reward": out["reward"], "executed": out["executed"], "overridden": out["overridden"], "corrected": corrected},
+    )
+    return out
 
 
 def _audit(db: Session, actor: str, action: str, target: str, meta: dict | None = None) -> None:
@@ -304,9 +347,11 @@ def save_suite(session_id: UUID, body: SaveSuiteBody, db: Session = Depends(get_
         db.add(
             Verifier(
                 suite_id=suite.id,
+                ext_id=v.id,
                 level=v.level,
                 assertion=v.assertion,
                 code=v.code,
+                check_ir=v.check or {},  # persist the executable IR so reward is server-recomputable
                 fails_until_corrected=v.failsUntilCorrected,
                 placeholder=v.placeholder,
                 added_by_human=v.addedByHuman,
@@ -319,47 +364,51 @@ def save_suite(session_id: UUID, body: SaveSuiteBody, db: Session = Depends(get_
 
 @router.post("/sessions/{session_id}/run")
 def run_verifiers(session_id: UUID, body: RunBody, db: Session = Depends(get_db)) -> dict:
-    """Execute the verifier suite for real against the captured DOM + ground-truth
-    state + trace, record the run, and return the true per-verifier results."""
+    """Execute the PERSISTED verifier suite for real against the captured DOM +
+    ground-truth state + trace, record the run, and return the true per-verifier
+    results. The reward is computed server-side from the stored suite — the
+    client's `verifiers` are ignored for scoring, so a fabricated passing check
+    cannot inflate the reward."""
     s = _get_session(db, session_id)
-    out = evaluate(body.verifiers, _session_fixture(db, s), body.corrected, set(body.overrides))
-    suite = _latest_suite(db, s.id)
-    if suite is not None:
-        db.add(BenchmarkRun(suite_id=suite.id, reward=out["reward"], results=out["results"]))
-    if s.status in _OPEN:
-        s.status = "benchmark_run"
-    _audit(
-        db, "", "benchmark.execute", str(s.id),
-        {"reward": out["reward"], "executed": out["executed"], "overridden": out["overridden"]},
-    )
+    out = _run_benchmark(db, s, body.corrected, set(body.overrides))
     db.commit()
     return out
 
 
 @router.post("/sessions/{session_id}/benchmark")
 def record_benchmark(session_id: UUID, body: BenchmarkBody, db: Session = Depends(get_db)) -> dict:
+    """Deprecated alias for /run — kept for back-compat. Recomputes the reward
+    from the persisted suite; the client-supplied `reward` is ignored."""
     s = _get_session(db, session_id)
-    suite = _latest_suite(db, s.id)
-    if suite is None:
-        raise HTTPException(status_code=409, detail="no verifier suite to benchmark")
-    run = BenchmarkRun(suite_id=suite.id, reward=int(body.reward), results=body.results)
-    db.add(run)
-    if s.status in _OPEN:
-        s.status = "benchmark_run"
-    _audit(db, "", "benchmark.run", str(suite.id), {"reward": body.reward})
+    _run_benchmark(db, s, body.corrected, set(body.overrides))
     db.commit()
     return _snapshot(db, s)
 
 
 @router.post("/sessions/{session_id}/submit")
 def submit(session_id: UUID, body: SubmitBody, db: Session = Depends(get_db)) -> dict:
+    """Write the dataset row. The reward stored is the AUTHORITATIVE server-computed
+    reward from the latest benchmark run of the persisted suite — never the
+    client-asserted `body.reward`. A benchmark must have been run first."""
     s = _get_session(db, session_id)
-    if body.reward != 1 and not body.override:
+    suite = _latest_suite(db, s.id)
+    if suite is None:
+        raise HTTPException(status_code=409, detail="no verifier suite to submit")
+    last_run = db.scalar(
+        select(BenchmarkRun)
+        .where(BenchmarkRun.suite_id == suite.id)
+        .order_by(BenchmarkRun.created_at.desc())
+    )
+    if last_run is None:
+        raise HTTPException(status_code=409, detail="run the benchmark before submitting")
+    reward = int(last_run.reward)  # authoritative — server-computed from the persisted suite
+    if reward != 1 and not body.override:
         raise HTTPException(status_code=409, detail="reward != 1 requires an override")
+    kind = "golden" if reward == 1 else "breaker"
     sub = Submission(
         session_id=s.id,
-        reward=int(body.reward),
-        kind=body.kind,
+        reward=reward,
+        kind=kind,
         submitted_with_override=body.override,
         override_reason=body.overrideReason,
     )
@@ -367,7 +416,13 @@ def submit(session_id: UUID, body: SubmitBody, db: Session = Depends(get_db)) ->
     s.status = "submitted"
     _audit(
         db, "", "session.submit", str(s.id),
-        {"reward": body.reward, "override": body.override, "kind": body.kind},
+        {
+            "reward": reward,
+            "clientAsserted": body.reward,
+            "diverged": body.reward != reward,
+            "override": body.override,
+            "kind": kind,
+        },
     )
     db.commit()
     return _snapshot(db, s)

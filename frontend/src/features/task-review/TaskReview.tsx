@@ -141,6 +141,9 @@ function ReviewScreen({ data, nav }: { data: ReviewData; nav: TaskNav }) {
     const overrides = Object.keys(state.overrides);
     const corrected = state.rerunFrom != null;
     if (sessionId) {
+      // Persist the current suite first — the server scores the PERSISTED suite,
+      // not this request's list, so the stored reward is authoritative.
+      await saveSuite(sessionId, verifiers);
       const out = await runVerifiers(sessionId, { corrected, verifiers, overrides });
       if (out) {
         dispatch({ t: "benchmarkComplete", results: out.results });

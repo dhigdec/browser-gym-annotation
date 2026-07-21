@@ -42,6 +42,7 @@ export interface VerifierPayload {
   level: string;
   assertion: string;
   code: string;
+  check?: unknown; // executable IR — persisted so the server recomputes reward authoritatively
   failsUntilCorrected: boolean;
   placeholder: boolean;
   addedByHuman: boolean;
