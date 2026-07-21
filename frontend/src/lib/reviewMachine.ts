@@ -28,6 +28,7 @@ export function makeInitialState(data: ReviewData): ReviewState {
     edits: {},
     results: {},
     branchTail: null,
+    rerunMode: null,
   };
 }
 
@@ -45,7 +46,7 @@ export type Action =
   | { t: "approveRemaining" }
   | { t: "generate" }
   | { t: "benchmarkComplete"; results: Record<string, string> }
-  | { t: "correctAndRerun"; fromStep: number; branch: Step[] | null }
+  | { t: "correctAndRerun"; fromStep: number; branch: Step[] | null; mode: string | null }
   | { t: "setLevel"; level: VerifierLevel }
   | { t: "addVerifier"; verifier: Verifier }
   | { t: "removeVerifier"; id: string }
@@ -94,6 +95,7 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
         ...s,
         rerunFrom: a.fromStep,
         branchTail: a.branch,
+        rerunMode: a.mode,
         verifiedThrough: total,
         stepsApproved: false,
         verifiersGenerated: false,

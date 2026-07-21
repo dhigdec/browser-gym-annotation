@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agent import generate_branch
 from app.api.tasks import _FIXTURE
 from app.db import get_db
 from app.verify import evaluate
@@ -196,13 +197,15 @@ def _get_session(db: Session, session_id: UUID) -> ReviewSession:
     return s
 
 
-def _branch_for(correction: str, mode: str) -> list[dict]:
-    """The corrected continuation. `deterministic` returns the ground-truth gold
-    path from the fixture (no model call). A live agent (`mode='agent'`) would
-    replace this with a real re-run from the corrected browser state — the M6b
-    plug-point, gated on API cost."""
-    # mode == "agent" would call the gym harness here; deterministic for now.
-    return _FIXTURE.get("correctedTail", [])
+def _branch_for(correction: str, mode: str, from_step: int) -> tuple[list[dict], str]:
+    """The corrected continuation + the mode actually used. `agent` calls a real
+    model to generate the continuation (M6b); if no key is set or the call fails,
+    it falls back to the deterministic ground-truth gold path."""
+    if mode == "agent":
+        generated = generate_branch(_FIXTURE, from_step, correction)
+        if generated:
+            return generated, "agent"
+    return _FIXTURE.get("correctedTail", []), "deterministic"
 
 
 # ---- endpoints -------------------------------------------------------------
@@ -258,7 +261,7 @@ def rerun(session_id: UUID, body: RerunBody, db: Session = Depends(get_db)) -> d
     versioned via parent_id, never overwritten — capturing the human correction.
     The continuation is deterministic today; a live agent plugs in at mode='agent'."""
     s = _get_session(db, session_id)
-    branch_steps = _branch_for(body.correction, body.mode)
+    branch_steps, actual_mode = _branch_for(body.correction, body.mode, body.fromStep)
     parent = db.scalar(
         select(TrajectoryBranch)
         .where(TrajectoryBranch.session_id == s.id)
@@ -269,16 +272,16 @@ def rerun(session_id: UUID, body: RerunBody, db: Session = Depends(get_db)) -> d
         parent_id=parent.id if parent else None,
         from_step=body.fromStep,
         correction=body.correction,
-        mode=body.mode,
+        mode=actual_mode,
         steps={"steps": branch_steps},
     )
     db.add(br)
     # Correcting re-forks the trace and re-locks the review (spec §3.25).
     s.rerun_from = body.fromStep
     s.status = "draft"
-    _audit(db, "", "agent.rerun", str(s.id), {"fromStep": body.fromStep, "mode": body.mode, "correction": body.correction[:200]})
+    _audit(db, "", "agent.rerun", str(s.id), {"fromStep": body.fromStep, "mode": actual_mode, "correction": body.correction[:200]})
     db.commit()
-    return {"fromStep": body.fromStep, "mode": body.mode, "steps": branch_steps}
+    return {"fromStep": body.fromStep, "mode": actual_mode, "steps": branch_steps}
 
 
 @router.put("/sessions/{session_id}/suite")

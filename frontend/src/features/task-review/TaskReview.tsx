@@ -207,11 +207,12 @@ function ReviewScreen({ data }: { data: ReviewData }) {
               onSaveCorrect={async (text) => {
                 setCorrecting(false);
                 let branch: Step[] | null = null;
+                let mode: string | null = null;
                 if (sessionId) {
-                  const out = await rerunTrajectory(sessionId, { fromStep: current.idx, correction: text });
-                  if (out) branch = out.steps;
+                  const out = await rerunTrajectory(sessionId, { fromStep: current.idx, correction: text, mode: "agent" });
+                  if (out) { branch = out.steps; mode = out.mode; }
                 }
-                dispatch({ t: "correctAndRerun", fromStep: current.idx, branch });
+                dispatch({ t: "correctAndRerun", fromStep: current.idx, branch, mode });
               }}
             />
             <Scrubber steps={steps} step={state.step} playing={state.playing} onPlayToggle={() => dispatch({ t: "playToggle" })} onStepTo={(i) => dispatch({ t: "stepTo", i })} />
@@ -222,6 +223,7 @@ function ReviewScreen({ data }: { data: ReviewData }) {
               stepsApproved={state.stepsApproved}
               remaining={remaining}
               rerunFrom={state.rerunFrom}
+              rerunMode={state.rerunMode}
               tabs={data.tabs}
               onStepTo={(i) => dispatch({ t: "stepTo", i })}
               onApproveRemaining={() => dispatch({ t: "approveRemaining" })}

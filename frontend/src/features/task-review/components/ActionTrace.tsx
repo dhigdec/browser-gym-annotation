@@ -42,6 +42,7 @@ export function ActionTrace({
   stepsApproved,
   remaining,
   rerunFrom,
+  rerunMode,
   tabs,
   onStepTo,
   onApproveRemaining,
@@ -52,10 +53,12 @@ export function ActionTrace({
   stepsApproved: boolean;
   remaining: number;
   rerunFrom: number | null;
+  rerunMode: string | null;
   tabs: Tab[];
   onStepTo: (i: number) => void;
   onApproveRemaining: () => void;
 }) {
+  const modeLabel = rerunMode === "agent" ? " · via live agent" : rerunMode === "deterministic" ? " · via oracle" : "";
   const titleOf = (id: string) => tabs.find((tb) => tb.id === id)?.title ?? id;
   const pink = ACTION_COLOR.tab;
   const reviewedAll = verifiedThrough >= steps.length;
@@ -90,7 +93,7 @@ export function ActionTrace({
               {i === forkAt && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 16px", background: `color-mix(in srgb, ${pink} 6%, ${t.n9})` }}>
                   <Icon name="branch" size={13} color={pink} />
-                  <span style={{ fontSize: "0.72rem", fontWeight: weight.bold, color: pink }}>Re-ran from step {rerunFrom} — correction applied</span>
+                  <span style={{ fontSize: "0.72rem", fontWeight: weight.bold, color: pink }}>Re-ran from step {rerunFrom} — correction applied{modeLabel}</span>
                 </div>
               )}
               <div

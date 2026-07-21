@@ -25,6 +25,10 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-annotator}:${POSTGRES_PASSWORD:-annotator}@postgres:5432/${POSTGRES_DB:-browser_gym_annotator}
       CORS_ORIGINS: '["http://localhost:8080"]'
       ENV: dev
+      # Live agent re-run (M6b). Set ANTHROPIC_API_KEY in your shell or infra/.env
+      # (gitignored) — passed through at runtime, never baked into the image.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENT_MODEL: ${AGENT_MODEL:-claude-haiku-4-5-20251001}
     depends_on:
       postgres:
         condition: service_healthy

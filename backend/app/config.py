@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     # verifiers/oracle); optional until then.
     gym_repo_path: str = ""
 
+    # Live agent re-run (M6b). Key read from the environment — never committed.
+    # Empty key → the re-run falls back to the deterministic gold path.
+    anthropic_api_key: str = ""
+    agent_model: str = "claude-haiku-4-5-20251001"
+
     env: str = "dev"
 
 

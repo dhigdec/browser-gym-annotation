@@ -111,4 +111,6 @@ export interface ReviewState {
   results: Record<string, string>;
   /** server-computed corrected branch (M6); null → offline fixture tail. */
   branchTail: Step[] | null;
+  /** how the branch was produced (M6b): "agent" | "deterministic" | null. */
+  rerunMode: string | null;
 }
