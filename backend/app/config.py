@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     agent_model: str = "claude-haiku-4-5-20251001"
 
+    # Live gym (M6c). The running ecommerce-browser-gym harness — for verifying
+    # against the real world state. In Docker this is host.docker.internal.
+    gym_url: str = "http://localhost:8000"
+    gym_harness_token: str = ""
+
     env: str = "dev"
 
 

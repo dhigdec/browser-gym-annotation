@@ -29,6 +29,11 @@ services:
       # (gitignored) — passed through at runtime, never baked into the image.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AGENT_MODEL: ${AGENT_MODEL:-claude-haiku-4-5-20251001}
+      # Live gym (M6c). The gym runs on the host; reach it via host.docker.internal.
+      GYM_URL: ${GYM_URL:-http://host.docker.internal:8000}
+      GYM_HARNESS_TOKEN: ${GYM_HARNESS_TOKEN:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
