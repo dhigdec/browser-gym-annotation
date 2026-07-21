@@ -4,8 +4,9 @@ annotator platform's replay pane (M3 — "Captured frame · rendered DOM snapsho
 The gym renders with Tailwind (CDN, which injects a <style> into the live DOM)
 plus a local /static/style.css. So a snapshot taken after load is nearly
 self-contained: we inline the local CSS, keep Tailwind's injected <style>, strip
-the CDN scripts (the generated CSS is already in the DOM) and the gym's internal
-task banner, and inline same-origin images as data URIs.
+the CDN scripts (the generated CSS is already in the DOM), the gym's internal
+task banner, and its workspace app-switcher (the annotator's tab strip already
+represents the open apps), and inline same-origin images as data URIs.
 
 Usage:
     BASE=http://localhost:8077 TOKEN=... OUT=/path/to/snapshots \
@@ -43,6 +44,10 @@ async (cssText) => {
   document.querySelectorAll('link[rel="stylesheet"]').forEach(l => l.remove());
   const banner = document.querySelector('[data-test-id="task-banner"]');
   if (banner) banner.remove();
+  // Strip the gym's global workspace app-switcher — the annotator's own tab
+  // strip already represents the open apps, so keeping it double-renders tabs.
+  const appbar = document.querySelector('[data-test-id="appbar"]');
+  if (appbar) appbar.remove();
   const style = document.createElement('style');
   style.textContent = cssText;
   document.head.appendChild(style);
