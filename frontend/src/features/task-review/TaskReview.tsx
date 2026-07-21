@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
-import { Icon, t, weight } from "../../ds";
+import { Button, Icon, t, weight } from "../../ds";
 import {
   adjudicate,
   autogenVerifiers,
@@ -101,6 +101,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
   const [driving, setDriving] = useState<null | "queued" | "running">(null);
   const [autogen, setAutogen] = useState<null | "queued" | "running">(null);
   const [autogenResult, setAutogenResult] = useState<AutogenResult | null>(null);
+  const [editingState, setEditingState] = useState(false);
 
   useEffect(() => {
     if (!state.playing) return;
@@ -228,6 +229,12 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <SaveBadge sessionId={sessionId} status={status} />
             {data.source === "gym" && data.gymResume && (
+              <span onClick={() => setEditingState(true)} title="Edit the world state and re-verify against the gym"
+                style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, background: t.n9, color: t.primary6, fontSize: "0.75rem", fontWeight: weight.semibold, cursor: "pointer", whiteSpace: "nowrap" }}>
+                ✎ Edit state
+              </span>
+            )}
+            {data.source === "gym" && data.gymResume && (
               <span
                 onClick={driving ? undefined : async () => {
                   setDriving("queued");
@@ -346,7 +353,96 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
       </div>
 
       {autogenResult && <AutogenPanel result={autogenResult} onClose={() => setAutogenResult(null)} />}
+      {editingState && data.source === "gym" && data.gymResume && (
+        <StateEditor
+          world={data.gymResume.worldState ?? {}}
+          onClose={() => setEditingState(false)}
+          onApply={async (edits) => {
+            const res = await resumeGymReview({
+              taskId: data.task.id,
+              seed: data.gymResume!.seed,
+              worldState: data.gymResume!.worldState,
+              urlTrail: data.gymResume!.urlTrail,
+              finalUrl: data.gymResume!.finalUrl,
+              edits,
+            });
+            if (res) dispatch({ t: "gymResumed", reward: res.reward });
+            setEditingState(false);
+          }}
+        />
+      )}
     </Frame>
+  );
+}
+
+function StateEditor({ world, onClose, onApply }: { world: Record<string, unknown>; onClose: () => void; onApply: (edits: Record<string, unknown>) => Promise<void> }) {
+  const shop = ((world?.shop ?? {}) as Record<string, unknown>);
+  const cart = ((shop.cart ?? {}) as Record<string, unknown>);
+  const nOrders = Object.keys((shop.orders ?? {}) as object).length;
+  const nCart = ((cart.items ?? []) as unknown[]).length;
+  const nReturns = Object.keys((shop.returns ?? {}) as object).length;
+  const nSubs = Object.keys((shop.subscriptions ?? {}) as object).length;
+  const [user, setUser] = useState<string>((shop.current_user_id as string) ?? "");
+  const [promo, setPromo] = useState<string>((cart.applied_promo as string) ?? "");
+  const [voidOrders, setVoidOrders] = useState(false);
+  const [emptyCart, setEmptyCart] = useState(false);
+  const [voidReturns, setVoidReturns] = useState(false);
+  const [voidSubs, setVoidSubs] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const build = (): Record<string, unknown> => {
+    const e: Record<string, unknown> = {};
+    if (((shop.current_user_id as string) ?? "") !== user) e["shop.current_user_id"] = user || null;
+    if (((cart.applied_promo as string) ?? "") !== promo) e["shop.cart.applied_promo"] = promo || null;
+    if (voidOrders) e["shop.orders"] = {};
+    if (emptyCart) e["shop.cart.items"] = [];
+    if (voidReturns) e["shop.returns"] = {};
+    if (voidSubs) e["shop.subscriptions"] = {};
+    return e;
+  };
+  const edits = build();
+  const field = { display: "block", marginTop: 5, width: "100%", boxSizing: "border-box" as const, padding: "8px 11px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, background: t.n85, color: t.n0, fontFamily: t.fontMono, fontSize: "0.8rem", outline: "none" };
+  const label = { fontSize: "0.72rem", fontWeight: weight.semibold, color: t.n2, textTransform: "uppercase" as const, letterSpacing: "0.05em" };
+  const toggle = (on: boolean, set: (v: boolean) => void, text: string, count: number) => (
+    <label style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 0", cursor: "pointer", fontSize: "0.83rem", color: t.n1 }}>
+      <input type="checkbox" checked={on} onChange={(e) => set(e.target.checked)} style={{ width: 15, height: 15, accentColor: t.primary6 }} />
+      {text} <span style={{ color: t.n3, fontFamily: t.fontMono, fontSize: "0.74rem" }}>(now {count})</span>
+    </label>
+  );
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(13,13,13,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 56 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 520, background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ padding: "18px 22px 14px", borderBottom: `1px solid ${t.n7}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: "1rem", fontWeight: weight.bold, color: t.n0 }}>✎ Edit the corrected state</div>
+            <div style={{ marginTop: 3, fontSize: "0.8rem", color: t.n2 }}>Change the world, then re-verify against the live gym for a real verdict.</div>
+          </div>
+          <span onClick={onClose} style={{ cursor: "pointer", color: t.n3, display: "inline-flex" }}><Icon name="close" size={18} /></span>
+        </div>
+        <div style={{ padding: "16px 22px", display: "flex", flexDirection: "column", gap: 14 }}>
+          <div>
+            <span style={label}>Logged-in user</span>
+            <input value={user} onChange={(e) => setUser(e.target.value)} placeholder="(none)" style={field} />
+          </div>
+          <div>
+            <span style={label}>Applied promo</span>
+            <input value={promo} onChange={(e) => setPromo(e.target.value)} placeholder="(none)" style={field} />
+          </div>
+          <div style={{ borderTop: `1px solid ${t.n8}`, paddingTop: 4 }}>
+            {toggle(voidOrders, setVoidOrders, "Void all orders", nOrders)}
+            {toggle(emptyCart, setEmptyCart, "Empty the cart", nCart)}
+            {toggle(voidReturns, setVoidReturns, "Void all returns", nReturns)}
+            {toggle(voidSubs, setVoidSubs, "Cancel all subscriptions", nSubs)}
+          </div>
+        </div>
+        <div style={{ padding: "14px 22px", borderTop: `1px solid ${t.n7}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontSize: "0.74rem", color: t.n3, fontFamily: t.fontMono }}>{Object.keys(edits).length} edit{Object.keys(edits).length === 1 ? "" : "s"}</span>
+          <Button variant="primary" disabled={busy || Object.keys(edits).length === 0} onClick={async () => { setBusy(true); await onApply(edits); }} style={{ minHeight: 40 }}>
+            {busy ? "Re-verifying…" : "Re-verify against gym"}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 
