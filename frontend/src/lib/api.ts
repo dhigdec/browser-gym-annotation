@@ -160,6 +160,25 @@ export async function adjudicate(taskId: string, sessionId: string, reviewer: st
   return !!out;
 }
 
+// ---- sample packaging / export --------------------------------------------
+
+/** Download one annotation as the deliverable golden-sample bundle (JSON). */
+export async function downloadSampleBundle(sessionId: string): Promise<void> {
+  try {
+    const res = await fetch(`/api/export/samples/${sessionId}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = new Blob([JSON.stringify(await res.json(), null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `golden_sample_${sessionId.slice(0, 8)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch {
+    /* ignore — the button just no-ops offline */
+  }
+}
+
 export function patchSession(
   sid: string,
   patch: { status?: SessionStatus; rerunFrom?: number },

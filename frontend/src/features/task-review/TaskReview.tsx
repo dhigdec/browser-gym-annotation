@@ -3,6 +3,7 @@ import { Button, Icon, t, weight } from "../../ds";
 import {
   adjudicate,
   autogenVerifiers,
+  downloadSampleBundle,
   driveForwardGym,
   fetchGymStatus,
   fetchQaSubmissions,
@@ -514,7 +515,10 @@ function QaPanel({ onClose, reviewer }: { onClose: () => void; reviewer: string 
             <div style={{ fontSize: "1rem", fontWeight: weight.bold, color: t.n0 }}>⚖ Multi-annotator QA</div>
             <div style={{ marginTop: 3, fontSize: "0.8rem", color: t.n2 }}>Agreement across annotators; accept one submission as the golden. Reviewing as <span style={{ fontFamily: t.fontMono, fontSize: "0.74rem" }}>{reviewer}</span>.</div>
           </div>
-          <span onClick={onClose} style={{ cursor: "pointer", color: t.n3, display: "inline-flex" }}><Icon name="close" size={18} /></span>
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <a href="/api/export/dataset.jsonl?accepted=true" download style={{ fontSize: "0.74rem", fontWeight: weight.semibold, color: t.primary6, textDecoration: "none", whiteSpace: "nowrap" }} title="Download the accepted golden samples as JSONL (the deliverable dataset)">⬇ Export golden dataset</a>
+            <span onClick={onClose} style={{ cursor: "pointer", color: t.n3, display: "inline-flex" }}><Icon name="close" size={18} /></span>
+          </div>
         </div>
         <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
           <div style={{ width: 320, borderRight: `1px solid ${t.n7}`, overflowY: "auto" }}>
@@ -553,6 +557,7 @@ function QaPanel({ onClose, reviewer }: { onClose: () => void; reviewer: string 
                 ) : (
                   <span onClick={busy ? undefined : () => accept(s.sessionId)} style={{ fontSize: "0.72rem", fontWeight: weight.semibold, color: busy ? t.n4 : t.primary6, cursor: busy ? "default" : "pointer", padding: "5px 11px", border: `1px solid ${t.n6}`, borderRadius: t.radiusLg, whiteSpace: "nowrap" }}>Accept as golden</span>
                 )}
+                <span onClick={() => downloadSampleBundle(s.sessionId)} title="Download this sample's golden bundle (JSON)" style={{ fontSize: "0.72rem", fontWeight: weight.semibold, color: t.n2, cursor: "pointer", whiteSpace: "nowrap" }}>⬇ bundle</span>
               </div>
             ))}
           </div>
