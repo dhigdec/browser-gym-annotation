@@ -29,6 +29,7 @@ export function makeInitialState(data: ReviewData): ReviewState {
     results: {},
     branchTail: null,
     rerunMode: null,
+    gymResumeReward: null,
   };
 }
 
@@ -47,6 +48,7 @@ export type Action =
   | { t: "generate" }
   | { t: "benchmarkComplete"; results: Record<string, string> }
   | { t: "correctAndRerun"; fromStep: number; branch: Step[] | null; mode: string | null }
+  | { t: "gymResumed"; reward: number }
   | { t: "setLevel"; level: VerifierLevel }
   | { t: "addVerifier"; verifier: Verifier }
   | { t: "removeVerifier"; id: string }
@@ -87,6 +89,10 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
       return s.stepsApproved ? { ...s, verifiersGenerated: true, benchmarkRun: false, results: {} } : s;
     case "benchmarkComplete":
       return s.verifiersGenerated ? { ...s, benchmarkRun: true, results: a.results } : s;
+    case "gymResumed":
+      // A gym task re-verified against the LIVE gym after a correction — the
+      // real milestone verdict on the resumed corrected state is the reward.
+      return { ...s, gymResumeReward: a.reward, benchmarkRun: true };
     case "correctAndRerun": {
       // Correcting a step re-forks the trace and RE-LOCKS Section 2 entirely
       // (spec §3.25): the annotator must re-approve, re-generate, and re-run.
@@ -193,7 +199,7 @@ export function verifierState(s: ReviewState, v: Verifier): MeterState {
 export function reward(s: ReviewState): number | null {
   if (!s.benchmarkRun) return null;
   // Gym tasks carry the authoritative real milestone verdict (M8).
-  if (s.data.source === "gym") return s.data.gymReward ?? 0;
+  if (s.data.source === "gym") return s.gymResumeReward ?? s.data.gymReward ?? 0;
   return allVerifiers(s).every((v) => verifierState(s, v) === "pass") ? 1 : 0;
 }
 

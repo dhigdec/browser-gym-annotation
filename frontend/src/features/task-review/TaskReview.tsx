@@ -8,6 +8,7 @@ import {
   openSession,
   patchSession,
   rerunTrajectory,
+  resumeGymReview,
   runGymReview,
   runVerifiers,
   saveSuite,
@@ -241,6 +242,21 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
               onCancelCorrect={() => setCorrecting(false)}
               onSaveCorrect={async (text) => {
                 setCorrecting(false);
+                // Gym tasks resume from the corrected state IN THE LIVE GYM: load
+                // the captured world, replay the trajectory, and read the REAL
+                // milestone verdict — not a canned tail. (Fixture tasks below use
+                // the deterministic/agent branch.)
+                if (data.source === "gym" && data.gymResume) {
+                  const res = await resumeGymReview({
+                    taskId: data.task.id,
+                    seed: data.gymResume.seed,
+                    worldState: data.gymResume.worldState,
+                    urlTrail: data.gymResume.urlTrail,
+                    finalUrl: data.gymResume.finalUrl,
+                  });
+                  if (res) dispatch({ t: "gymResumed", reward: res.reward });
+                  return;
+                }
                 let branch: Step[] | null = null;
                 let mode: string | null = null;
                 if (sessionId) {

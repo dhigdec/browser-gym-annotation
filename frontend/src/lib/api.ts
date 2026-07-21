@@ -62,6 +62,7 @@ function mapPayload(p: ReviewPayload): ReviewData {
     verifiers: p.verifiers,
     source: p.source ?? "fixture",
     gymReward: p.gymReward,
+    gymResume: p.gymResume,
   };
 }
 
@@ -198,6 +199,21 @@ export interface GymJob {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export interface ResumeResult { score: number; success: boolean; reward: number }
+
+/** Resume a gym task from its corrected state: load the captured world (+ optional
+ *  dot-path edits) into the gym and replay the trajectory → REAL milestone verdict. */
+export async function resumeGymReview(body: {
+  taskId: string;
+  seed: number;
+  worldState?: Record<string, unknown>;
+  urlTrail: string[];
+  finalUrl: string;
+  edits?: Record<string, unknown>;
+}): Promise<ResumeResult | null> {
+  return post<ResumeResult>("/api/gym/resume", body);
+}
 
 /** Enqueue a real gym run; returns the jobId to poll, or null if unreachable. */
 export async function startGymReview(taskId: string, agent = "oracle", seed = 0): Promise<string | null> {

@@ -59,6 +59,13 @@ export interface ApiTask {
   allowedSites: ApiSite[];
   runSummary: Metric[];
 }
+/** Everything needed to resume a gym episode from a corrected state (M-resume). */
+export interface GymResume {
+  seed: number;
+  urlTrail: string[];
+  finalUrl: string;
+  worldState?: Record<string, unknown>;
+}
 export interface ReviewPayload {
   task: ApiTask;
   tabs: ApiTab[];
@@ -68,6 +75,7 @@ export interface ReviewPayload {
   verifiers: Verifier[];
   source?: "fixture" | "gym";
   gymReward?: number;
+  gymResume?: GymResume;
 }
 
 /** A row in the task queue (from GET /api/tasks). */
@@ -108,6 +116,7 @@ export interface ReviewData {
   verifiers: Verifier[];
   source?: "fixture" | "gym";
   gymReward?: number;
+  gymResume?: GymResume;
 }
 
 /** Review-flow state machine (mirrors the design's linear gate chain). */
@@ -133,4 +142,7 @@ export interface ReviewState {
   branchTail: Step[] | null;
   /** how the branch was produced (M6b): "agent" | "deterministic" | null. */
   rerunMode: string | null;
+  /** real gym verdict after a resume-from-corrected-state (M-resume); overrides
+   *  gymReward once a gym task has been re-verified. */
+  gymResumeReward: number | null;
 }

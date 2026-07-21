@@ -38,6 +38,16 @@ const generated = (): ReviewState => {
   return reducer(s, { t: "generate" });
 };
 
+describe("gym resume", () => {
+  it("re-verifying a gym task overrides the reward with the real verdict", () => {
+    const gymData: ReviewData = { ...data, source: "gym", gymReward: 0, gymResume: { seed: 0, urlTrail: [], finalUrl: "" } };
+    let s = makeInitialState(gymData);
+    s = reducer(s, { t: "gymResumed", reward: 1 });
+    expect(s.benchmarkRun).toBe(true);
+    expect(reward(s)).toBe(1); // resumed verdict wins over the stale gymReward 0
+  });
+});
+
 describe("gate chain", () => {
   it("parks on the error step, unapproved", () => {
     const s = makeInitialState(data);
