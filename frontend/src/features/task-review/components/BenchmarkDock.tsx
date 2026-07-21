@@ -25,9 +25,12 @@ export function BenchmarkDock({
   let sub: string;
   if (!benchmarkRun) sub = "Run the benchmark to score every verifier on the final state.";
   else if (reward === 1)
+    // Strict gate: for a built suite reward 1 means every verifier passed.
+    // A gym review carries the gym's own authoritative success verdict, which
+    // can be 1 even if some derived milestone checks did not fire — flag that.
     sub = failing === 0
-      ? `All ${total} verifiers scored 1 — ready to submit.`
-      : `Reward 1 — ready to submit (${failing} non-required check${failing > 1 ? "s" : ""} did not fire).`;
+      ? `All ${total} verifiers passed — reward 1, ready to submit.`
+      : `Reward 1 is the run's authoritative verdict, but ${failing} of ${total} verifier check${failing > 1 ? "s" : ""} did not pass — review before submitting.`;
   else sub = `${failing} of ${total} verifiers scored 0. Override to submit, or edit a verifier / correct the trace and re-run.`;
 
   return (
