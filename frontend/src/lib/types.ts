@@ -62,6 +62,16 @@ export interface ReviewPayload {
   verifiers: Verifier[];
 }
 
+/** A row in the task queue (from GET /api/tasks). */
+export interface TaskListItem {
+  id: string;
+  title: string;
+  priority: "High" | "Medium" | "Low";
+  meta: string;
+  index: number;
+  total: number;
+}
+
 // ---- Domain shape (API mapped → colors resolved for rendering) ------------
 
 export interface Tab {

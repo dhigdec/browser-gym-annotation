@@ -4,9 +4,11 @@ function Rule() {
   return <span style={{ width: 1, height: 22, background: t.n7, flexShrink: 0 }} />;
 }
 
-function PagerBox({ dir }: { dir: "chevronLeft" | "chevronRight" }) {
+function PagerBox({ dir, onClick, disabled }: { dir: "chevronLeft" | "chevronRight"; onClick: () => void; disabled: boolean }) {
   return (
     <span
+      onClick={disabled ? undefined : onClick}
+      title={dir === "chevronLeft" ? "Previous task" : "Next task"}
       style={{
         width: 30,
         height: 30,
@@ -17,7 +19,8 @@ function PagerBox({ dir }: { dir: "chevronLeft" | "chevronRight" }) {
         border: `1px solid ${t.n6}`,
         background: t.n9,
         color: t.n2,
-        cursor: "pointer",
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.4 : 1,
       }}
     >
       <Icon name={dir} size={16} stroke={1.8} />
@@ -25,7 +28,7 @@ function PagerBox({ dir }: { dir: "chevronLeft" | "chevronRight" }) {
   );
 }
 
-export function Header() {
+export function Header({ index, total, onPrev, onNext, onSkip }: { index: number; total: number; onPrev: () => void; onNext: () => void; onSkip: () => void }) {
   const mono = { fontFamily: t.fontMono } as const;
   return (
     <header
@@ -51,13 +54,13 @@ export function Header() {
         <span style={{ color: t.n1, fontWeight: weight.semibold }}>Tasking</span>
       </nav>
       <Rule />
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }} title="One task at a time">
-        <PagerBox dir="chevronLeft" />
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <PagerBox dir="chevronLeft" onClick={onPrev} disabled={index <= 0} />
         <span style={{ fontSize: "0.8125rem", fontWeight: weight.semibold, color: t.n1, whiteSpace: "nowrap" }}>
-          Task <span style={mono}>4</span> of <span style={mono}>12</span>
+          Task <span style={mono}>{index + 1}</span> of <span style={mono}>{total}</span>
         </span>
-        <PagerBox dir="chevronRight" />
-        <span style={{ marginLeft: 4, fontSize: "0.78rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer" }}>
+        <PagerBox dir="chevronRight" onClick={onNext} disabled={index >= total - 1} />
+        <span onClick={onSkip} style={{ marginLeft: 4, fontSize: "0.78rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer" }}>
           Skip
         </span>
       </div>

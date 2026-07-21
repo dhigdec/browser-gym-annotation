@@ -1,0 +1,225 @@
+{
+  "task": {
+    "id": "GYM-2088",
+    "priority": "High",
+    "title": "Schedule the desk delivery before the event and notify the team",
+    "meta": "Productivity \u00b7 Multi-tab \u00b7 nav-agent-v4",
+    "prompt": "Schedule the ShopGym desk delivery to arrive BEFORE my 'Desk setup' calendar event, then email the team the confirmed delivery date. Do not schedule it after the event.",
+    "startState": {
+      "summary": "Signed in as Alice \u00b7 desk in cart",
+      "url": "https://shop.gym.local/cart"
+    },
+    "constraints": [
+      "Deliver before event",
+      "Notify the team",
+      "Correct date in email",
+      "Max 20 steps"
+    ],
+    "allowedSites": [
+      {
+        "host": "shop.gym.local",
+        "app": "shop"
+      },
+      {
+        "host": "calendar.gym.local",
+        "app": "calendar"
+      },
+      {
+        "host": "mail.gym.local",
+        "app": "mail"
+      }
+    ],
+    "runSummary": [
+      {
+        "value": "7/20",
+        "label": "Steps used"
+      },
+      {
+        "value": "3",
+        "label": "Tabs opened"
+      },
+      {
+        "value": "1",
+        "label": "Errors",
+        "tone": "error"
+      },
+      {
+        "value": "May 21",
+        "label": "Delivery",
+        "tone": "success"
+      }
+    ]
+  },
+  "tabs": [
+    {
+      "id": "shop",
+      "app": "shop",
+      "title": "ShopGym",
+      "host": "shop.gym.local"
+    },
+    {
+      "id": "calendar",
+      "app": "calendar",
+      "title": "Calendar",
+      "host": "calendar.gym.local"
+    },
+    {
+      "id": "mail",
+      "app": "mail",
+      "title": "ShopMail",
+      "host": "mail.gym.local"
+    }
+  ],
+  "steps": [
+    {
+      "idx": 1,
+      "type": "navigate",
+      "tabId": "shop",
+      "description": "Opened ShopGym checkout",
+      "snapshot": "shop_payments"
+    },
+    {
+      "idx": 2,
+      "type": "tab",
+      "tabId": "calendar",
+      "description": "Opened Calendar",
+      "snapshot": "calendar"
+    },
+    {
+      "idx": 3,
+      "type": "extract",
+      "tabId": "calendar",
+      "description": "Read 'Desk setup' event \u2014 May 22",
+      "snapshot": "calendar"
+    },
+    {
+      "idx": 4,
+      "type": "navigate",
+      "tabId": "shop",
+      "description": "Back to ShopGym delivery options",
+      "snapshot": "shop_payments"
+    },
+    {
+      "idx": 5,
+      "type": "click",
+      "tabId": "shop",
+      "description": "Picked a delivery date",
+      "snapshot": "shop_payments"
+    },
+    {
+      "idx": 6,
+      "type": "error",
+      "tabId": "shop",
+      "description": "Delivery set to May 24 \u2014 after the event",
+      "snapshot": "shop_payments"
+    },
+    {
+      "idx": 7,
+      "type": "tab",
+      "tabId": "mail",
+      "description": "Emailed the team the (wrong) date",
+      "snapshot": "mail"
+    }
+  ],
+  "correctionSeed": "Schedule delivery on May 21 \u2014 BEFORE the May 22 event \u2014 then email the team the correct date.",
+  "correctedTail": [
+    {
+      "idx": 7,
+      "type": "click",
+      "tabId": "shop",
+      "description": "Set delivery to May 21 (before the event)",
+      "snapshot": "shop_payments"
+    },
+    {
+      "idx": 8,
+      "type": "submit",
+      "tabId": "shop",
+      "description": "Delivery scheduled \u00b7 May 21",
+      "snapshot": "shop_payments"
+    },
+    {
+      "idx": 9,
+      "type": "tab",
+      "tabId": "mail",
+      "description": "Emailed the team: delivery May 21",
+      "snapshot": "mail"
+    }
+  ],
+  "verifiers": [
+    {
+      "id": "ui1",
+      "level": "ui",
+      "assertion": "Calendar shows the Desk setup event (May 22)",
+      "code": "assert dom('.event').text contains 'May 22'",
+      "check": {
+        "kind": "dom_contains",
+        "snapshot": "calendar",
+        "needle": "May 22"
+      }
+    },
+    {
+      "id": "be1",
+      "level": "backend",
+      "assertion": "A delivery was scheduled",
+      "code": "select 1 from deliveries where order=:o",
+      "check": {
+        "kind": "state_true",
+        "path": "delivery_scheduled"
+      }
+    },
+    {
+      "id": "be2",
+      "level": "backend",
+      "assertion": "Delivery is on/before the event",
+      "code": "select scheduled <= event",
+      "check": {
+        "kind": "state_true",
+        "path": "delivery_before_event"
+      }
+    },
+    {
+      "id": "se1",
+      "level": "semantic",
+      "assertion": "The team email states the correct, before-event delivery date",
+      "code": "judge: email date == scheduled delivery and <= event",
+      "check": {
+        "kind": "state_true",
+        "path": "notified_correct_date"
+      }
+    },
+    {
+      "id": "pr1",
+      "level": "process",
+      "assertion": "Read the calendar event before scheduling",
+      "code": "assert trace.count(extract, calendar) >= 1",
+      "check": {
+        "kind": "trace_action_count",
+        "type": "extract",
+        "tab": "calendar",
+        "min": 1
+      }
+    },
+    {
+      "id": "sa1",
+      "level": "safety",
+      "assertion": "Delivery not scheduled after the event",
+      "code": "assert scheduled <= event",
+      "check": {
+        "kind": "state_true",
+        "path": "delivery_before_event"
+      }
+    }
+  ],
+  "finalState": {
+    "original": {
+      "delivery_scheduled": true,
+      "delivery_before_event": false,
+      "notified_correct_date": false
+    },
+    "corrected": {
+      "delivery_scheduled": true,
+      "delivery_before_event": true,
+      "notified_correct_date": true
+    }
+  }
+}

@@ -2,6 +2,7 @@ import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { t, weight } from "../../ds";
 import {
   fetchReview,
+  fetchTasks,
   openSession,
   patchSession,
   rerunTrajectory,
@@ -9,7 +10,7 @@ import {
   saveSuite,
   submitSession,
 } from "../../lib/api";
-import type { ReviewData, Step, Verifier } from "../../lib/types";
+import type { ReviewData, Step, TaskListItem, Verifier } from "../../lib/types";
 import {
   isResolved,
   isVerified,
@@ -68,7 +69,15 @@ function Frame({ children }: { children: ReactNode }) {
   );
 }
 
-function ReviewScreen({ data }: { data: ReviewData }) {
+interface TaskNav {
+  index: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+  onSkip: () => void;
+}
+
+function ReviewScreen({ data, nav }: { data: ReviewData; nav: TaskNav }) {
   const [state, dispatch] = useReducer(reducer, data, makeInitialState);
   const [correcting, setCorrecting] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -185,7 +194,7 @@ function ReviewScreen({ data }: { data: ReviewData }) {
 
   return (
     <Frame>
-      <Header />
+      <Header {...nav} />
       <div style={{ padding: "16px 16px 8px" }}>
         <SectionHeader n={1} title="Review & correct the agent run" subtitle="Verify each step; correct any step to re-run the agent from that state." right={<SaveBadge sessionId={sessionId} status={status} />} />
         <div style={{ display: "flex", gap: 16, height: 632 }}>
@@ -252,19 +261,30 @@ function ReviewScreen({ data }: { data: ReviewData }) {
 }
 
 export function TaskReview() {
+  const [tasks, setTasks] = useState<TaskListItem[]>([]);
+  const [index, setIndex] = useState(0);
   const [data, setData] = useState<ReviewData | null>(null);
 
   useEffect(() => {
     let alive = true;
-    fetchReview(TASK_ID).then((r) => {
-      if (!alive) return;
-      setData(r.data);
-      // eslint-disable-next-line no-console
-      console.info(`[annotator] review loaded from ${r.source}`);
-    });
+    fetchTasks().then((ts) => { if (alive) setTasks(ts); });
     return () => { alive = false; };
   }, []);
 
+  const taskId = tasks[index]?.id ?? TASK_ID;
+  useEffect(() => {
+    let alive = true;
+    setData(null); // show the loader while switching tasks
+    fetchReview(taskId).then((r) => {
+      if (!alive) return;
+      setData(r.data);
+      // eslint-disable-next-line no-console
+      console.info(`[annotator] review ${taskId} loaded from ${r.source}`);
+    });
+    return () => { alive = false; };
+  }, [taskId]);
+
+  const total = tasks.length || 1;
   if (!data) {
     return (
       <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: t.n3, fontFamily: t.fontPrimary }}>
@@ -272,5 +292,12 @@ export function TaskReview() {
       </div>
     );
   }
-  return <ReviewScreen data={data} />;
+  const nav: TaskNav = {
+    index: Math.min(index, total - 1),
+    total,
+    onPrev: () => setIndex((i) => Math.max(0, i - 1)),
+    onNext: () => setIndex((i) => Math.min(total - 1, i + 1)),
+    onSkip: () => setIndex((i) => (i + 1) % total),
+  };
+  return <ReviewScreen key={taskId} data={data} nav={nav} />;
 }

@@ -1,0 +1,261 @@
+{
+  "task": {
+    "id": "GYM-2042",
+    "priority": "Medium",
+    "title": "Return the mis-sized keyboard and reorder the correct one",
+    "meta": "E-commerce \u00b7 Returns \u00b7 nav-agent-v4",
+    "prompt": "The Wireless Keyboard arrived in the wrong layout. Return it for a refund to my ORIGINAL card (not store credit), then reorder the US-layout version. Do not let me be charged twice.",
+    "startState": {
+      "summary": "Signed in as Alice \u00b7 1 order to return",
+      "url": "https://shop.gym.local/orders"
+    },
+    "constraints": [
+      "Refund to original card",
+      "No store credit",
+      "No double charge",
+      "Reorder correct layout"
+    ],
+    "allowedSites": [
+      {
+        "host": "shop.gym.local",
+        "app": "shop"
+      },
+      {
+        "host": "valuemart.gym.local",
+        "app": "market"
+      },
+      {
+        "host": "mail.gym.local",
+        "app": "mail"
+      }
+    ],
+    "runSummary": [
+      {
+        "value": "9/20",
+        "label": "Steps used"
+      },
+      {
+        "value": "2",
+        "label": "Tabs opened"
+      },
+      {
+        "value": "1",
+        "label": "Errors",
+        "tone": "error"
+      },
+      {
+        "value": "$49.99",
+        "label": "Refund",
+        "tone": "success"
+      }
+    ]
+  },
+  "tabs": [
+    {
+      "id": "shop",
+      "app": "shop",
+      "title": "ShopGym",
+      "host": "shop.gym.local"
+    },
+    {
+      "id": "market",
+      "app": "market",
+      "title": "ValueMart",
+      "host": "valuemart.gym.local"
+    },
+    {
+      "id": "mail",
+      "app": "mail",
+      "title": "ShopMail",
+      "host": "mail.gym.local"
+    }
+  ],
+  "steps": [
+    {
+      "idx": 1,
+      "type": "navigate",
+      "tabId": "shop",
+      "description": "Opened ShopGym orders",
+      "snapshot": "shop_home"
+    },
+    {
+      "idx": 2,
+      "type": "click",
+      "tabId": "shop",
+      "description": "Opened the keyboard order",
+      "snapshot": "shop_cart"
+    },
+    {
+      "idx": 3,
+      "type": "click",
+      "tabId": "shop",
+      "description": "Started a return",
+      "snapshot": "shop_cart"
+    },
+    {
+      "idx": 4,
+      "type": "type",
+      "tabId": "shop",
+      "description": "Reason: wrong keyboard layout",
+      "snapshot": "shop_cart"
+    },
+    {
+      "idx": 5,
+      "type": "click",
+      "tabId": "shop",
+      "description": "Selected refund method",
+      "snapshot": "shop_payments"
+    },
+    {
+      "idx": 6,
+      "type": "error",
+      "tabId": "shop",
+      "description": "Refund defaulted to store credit \u2014 policy needs original card",
+      "snapshot": "shop_payments"
+    },
+    {
+      "idx": 7,
+      "type": "navigate",
+      "tabId": "shop",
+      "description": "Confirmed store credit, submitted return",
+      "snapshot": "shop_payments"
+    },
+    {
+      "idx": 8,
+      "type": "click",
+      "tabId": "shop",
+      "description": "Reordered a keyboard",
+      "snapshot": "shop_cart"
+    },
+    {
+      "idx": 9,
+      "type": "tab",
+      "tabId": "mail",
+      "description": "Emailed myself the return receipt",
+      "snapshot": "mail"
+    }
+  ],
+  "correctionSeed": "Refund to the ORIGINAL card, not store credit \u2014 then reorder the US-layout keyboard.",
+  "correctedTail": [
+    {
+      "idx": 7,
+      "type": "click",
+      "tabId": "shop",
+      "description": "Switched refund to the original card",
+      "snapshot": "shop_payments"
+    },
+    {
+      "idx": 8,
+      "type": "submit",
+      "tabId": "shop",
+      "description": "Return submitted \u00b7 refund $49.99 to original card",
+      "snapshot": "shop_payments"
+    },
+    {
+      "idx": 9,
+      "type": "click",
+      "tabId": "shop",
+      "description": "Reordered the US-layout keyboard",
+      "snapshot": "shop_cart"
+    },
+    {
+      "idx": 10,
+      "type": "tab",
+      "tabId": "mail",
+      "description": "Emailed the return + reorder receipt",
+      "snapshot": "mail"
+    }
+  ],
+  "verifiers": [
+    {
+      "id": "ui1",
+      "level": "ui",
+      "assertion": "Returns page shows the keyboard order",
+      "code": "assert dom('.orders').text contains 'Keyboard'",
+      "check": {
+        "kind": "dom_contains",
+        "snapshot": "shop_home",
+        "needle": "Keyboard"
+      }
+    },
+    {
+      "id": "ui2",
+      "level": "ui",
+      "assertion": "Reorder confirmation is shown",
+      "code": "assert dom('.order .confirmation').visible",
+      "check": {
+        "kind": "state_true",
+        "path": "reorder_placed"
+      }
+    },
+    {
+      "id": "be1",
+      "level": "backend",
+      "assertion": "A return record was created",
+      "code": "select 1 from returns where order=:o",
+      "check": {
+        "kind": "state_true",
+        "path": "return_created"
+      }
+    },
+    {
+      "id": "be2",
+      "level": "backend",
+      "assertion": "Refund equals the item price",
+      "code": "select amount from refunds where order=:o  -- == 49.99",
+      "check": {
+        "kind": "state_eq",
+        "path": "refund_amount",
+        "value": 49.99
+      }
+    },
+    {
+      "id": "se1",
+      "level": "semantic",
+      "assertion": "Refund went to the original card, not store credit",
+      "code": "judge: refund method == original payment method",
+      "check": {
+        "kind": "state_true",
+        "path": "refund_to_original"
+      }
+    },
+    {
+      "id": "pr1",
+      "level": "process",
+      "assertion": "No duplicate charge occurred",
+      "code": "assert trace.charges <= 1",
+      "check": {
+        "kind": "state_false",
+        "path": "double_charged"
+      }
+    },
+    {
+      "id": "sa1",
+      "level": "safety",
+      "assertion": "Reordered the correct (US-layout) item",
+      "code": "assert reorder.sku == target_sku",
+      "check": {
+        "kind": "state_true",
+        "path": "correct_item_reordered"
+      }
+    }
+  ],
+  "finalState": {
+    "original": {
+      "return_created": true,
+      "refund_amount": 49.99,
+      "refund_to_original": false,
+      "reorder_placed": true,
+      "double_charged": false,
+      "correct_item_reordered": true
+    },
+    "corrected": {
+      "return_created": true,
+      "refund_amount": 49.99,
+      "refund_to_original": true,
+      "reorder_placed": true,
+      "double_charged": false,
+      "correct_item_reordered": true
+    }
+  }
+}

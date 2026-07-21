@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agent import generate_branch
-from app.api.tasks import _FIXTURE
+from app.api.tasks import _FIXTURE, task_fixture
 from app.db import get_db
 from app.verify import evaluate
 from app.models import (
@@ -91,12 +91,13 @@ class SubmitBody(BaseModel):
 # ---- helpers ---------------------------------------------------------------
 
 
-def _seed_task(db: Session) -> Task:
-    """Ensure the fixture task exists as a real row (idempotent)."""
-    ext = _FIXTURE["task"]["id"]
+def _seed_task(db: Session, external_id: str) -> Task:
+    """Ensure the given task exists as a real row (idempotent)."""
+    fx = task_fixture(external_id) or _FIXTURE
+    ext = fx["task"]["id"]
     task = db.scalar(select(Task).where(Task.external_id == ext))
     if task is None:
-        t = _FIXTURE["task"]
+        t = fx["task"]
         task = Task(
             external_id=ext,
             title=t["title"],
@@ -181,7 +182,7 @@ def _snapshot(db: Session, s: ReviewSession) -> dict:
         }
     return {
         "sessionId": str(s.id),
-        "taskExternalId": _FIXTURE["task"]["id"],
+        "taskExternalId": _session_fixture(db, s)["task"]["id"],
         "status": s.status,
         "rerunFrom": s.rerun_from,
         "suite": suite_out,
@@ -197,15 +198,21 @@ def _get_session(db: Session, session_id: UUID) -> ReviewSession:
     return s
 
 
-def _branch_for(correction: str, mode: str, from_step: int) -> tuple[list[dict], str]:
+def _session_fixture(db: Session, s: ReviewSession) -> dict:
+    """The task fixture this session is reviewing (M7)."""
+    task = db.get(Task, s.task_id)
+    return (task_fixture(task.external_id) if task else None) or _FIXTURE
+
+
+def _branch_for(correction: str, mode: str, from_step: int, fixture: dict) -> tuple[list[dict], str]:
     """The corrected continuation + the mode actually used. `agent` calls a real
     model to generate the continuation (M6b); if no key is set or the call fails,
     it falls back to the deterministic ground-truth gold path."""
     if mode == "agent":
-        generated = generate_branch(_FIXTURE, from_step, correction)
+        generated = generate_branch(fixture, from_step, correction)
         if generated:
             return generated, "agent"
-    return _FIXTURE.get("correctedTail", []), "deterministic"
+    return fixture.get("correctedTail", []), "deterministic"
 
 
 # ---- endpoints -------------------------------------------------------------
@@ -214,9 +221,9 @@ def _branch_for(correction: str, mode: str, from_step: int) -> tuple[list[dict],
 @router.post("/tasks/{external_id}/sessions")
 def open_session(external_id: str, body: OpenSessionBody, db: Session = Depends(get_db)) -> dict:
     """Resume the annotator's most recent session for this task, or start one."""
-    if external_id != _FIXTURE["task"]["id"]:
+    if task_fixture(external_id) is None:
         raise HTTPException(status_code=404, detail="task not found")
-    task = _seed_task(db)
+    task = _seed_task(db, external_id)
     ann = _default_annotator(db, body.annotatorEmail)
     existing = db.scalar(
         select(ReviewSession)
@@ -261,7 +268,7 @@ def rerun(session_id: UUID, body: RerunBody, db: Session = Depends(get_db)) -> d
     versioned via parent_id, never overwritten — capturing the human correction.
     The continuation is deterministic today; a live agent plugs in at mode='agent'."""
     s = _get_session(db, session_id)
-    branch_steps, actual_mode = _branch_for(body.correction, body.mode, body.fromStep)
+    branch_steps, actual_mode = _branch_for(body.correction, body.mode, body.fromStep, _session_fixture(db, s))
     parent = db.scalar(
         select(TrajectoryBranch)
         .where(TrajectoryBranch.session_id == s.id)
@@ -315,7 +322,7 @@ def run_verifiers(session_id: UUID, body: RunBody, db: Session = Depends(get_db)
     """Execute the verifier suite for real against the captured DOM + ground-truth
     state + trace, record the run, and return the true per-verifier results."""
     s = _get_session(db, session_id)
-    out = evaluate(body.verifiers, _FIXTURE, body.corrected, set(body.overrides))
+    out = evaluate(body.verifiers, _session_fixture(db, s), body.corrected, set(body.overrides))
     suite = _latest_suite(db, s.id)
     if suite is not None:
         db.add(BenchmarkRun(suite_id=suite.id, reward=out["reward"], results=out["results"]))

@@ -1,6 +1,23 @@
 import { APP_COLOR } from "./appColors";
 import { reviewFixture } from "../fixtures/reviewPayload";
-import type { ReviewData, ReviewPayload, Step } from "./types";
+import type { ReviewData, ReviewPayload, Step, TaskListItem } from "./types";
+
+/** The task queue (falls back to a single synthetic row offline). */
+export async function fetchTasks(): Promise<TaskListItem[]> {
+  try {
+    const res = await fetch("/api/tasks");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const list = (await res.json()) as TaskListItem[];
+    return list.length ? list : fallbackTasks();
+  } catch {
+    return fallbackTasks();
+  }
+}
+
+function fallbackTasks(): TaskListItem[] {
+  const t = reviewFixture.task;
+  return [{ id: t.id, title: t.title, priority: t.priority, meta: t.meta, index: 0, total: 1 }];
+}
 
 export type SessionStatus =
   | "draft"
