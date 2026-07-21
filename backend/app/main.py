@@ -30,7 +30,10 @@ async def lifespan(_: FastAPI):
     # the API still serves fixtures if Postgres is down (Alembic replaces this
     # create_all in a later milestone).
     try:
-        Base.metadata.create_all(engine)
+        # Dev bootstraps the schema directly; prod applies Alembic migrations
+        # (alembic upgrade head) at deploy time and sets auto_create_all=false.
+        if settings.auto_create_all:
+            Base.metadata.create_all(engine)
         from app.db import SessionLocal
         from app.seed import seed_catalog
         with SessionLocal() as db:

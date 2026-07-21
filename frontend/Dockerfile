@@ -7,6 +7,8 @@ COPY . .
 RUN npm run build
 
 FROM nginx:alpine
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# nginx's entrypoint renders templates with envsubst using $PORT / $BACKEND_ORIGIN.
+COPY default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
+ENV PORT=8080 BACKEND_ORIGIN=http://backend:8090
 EXPOSE 8080

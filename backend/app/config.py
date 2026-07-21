@@ -28,5 +28,9 @@ class Settings(BaseSettings):
 
     env: str = "dev"
 
+    # Dev bootstraps the schema with create_all; prod (GCP) sets this false and
+    # applies Alembic migrations instead (`alembic upgrade head`).
+    auto_create_all: bool = True
+
 
 settings = Settings()
