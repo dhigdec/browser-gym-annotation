@@ -182,8 +182,9 @@ export function allVerifiers(s: ReviewState): Verifier[] {
 
 export function verifierState(s: ReviewState, v: Verifier): MeterState {
   if (!s.benchmarkRun) return "pending";
-  if (v.placeholder) return "fail"; // empty/placeholder never passes
   if (s.overrides[v.id]) return "pass"; // human-attested (stamped)
+  if (v.gymResult === "pass" || v.gymResult === "fail") return v.gymResult; // real gym milestone (M8)
+  if (v.placeholder) return "fail"; // empty/placeholder never passes
   const r = s.results[v.id]; // real result from the execution engine
   if (r === "pass" || r === "fail" || r === "pending") return r as MeterState;
   return "fail"; // ran, but no result for this check → unproven, fails closed
@@ -191,6 +192,8 @@ export function verifierState(s: ReviewState, v: Verifier): MeterState {
 
 export function reward(s: ReviewState): number | null {
   if (!s.benchmarkRun) return null;
+  // Gym tasks carry the authoritative real milestone verdict (M8).
+  if (s.data.source === "gym") return s.data.gymReward ?? 0;
   return allVerifiers(s).every((v) => verifierState(s, v) === "pass") ? 1 : 0;
 }
 

@@ -1,9 +1,10 @@
-"""Live gym endpoints (M6c) — verify against the real world, not a fixture."""
+"""Live gym endpoints (M6c/M8) — verify against the real world, and load real
+gym tasks into the review UI."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
-from app import gym_client
+from app import gym_client, gym_review
 from app.config import settings
 
 router = APIRouter(prefix="/api/gym", tags=["gym"])
@@ -62,3 +63,29 @@ def gym_run(body: RunBody) -> dict:
     if r is None:
         raise HTTPException(status_code=502, detail="gym unreachable or run failed")
     return {"run": r, "verdict": gym_client.verify(0), "snapshot": gym_client.snapshot()}
+
+
+class RunReviewBody(BaseModel):
+    agent: str = "oracle"
+    seed: int = 0
+
+
+@router.post("/tasks/{task_id:path}/run-review")
+def gym_run_review(task_id: str, body: RunReviewBody) -> dict:
+    """M8 — run a real agent on a gym task and return a review payload (real
+    brief, real steps with per-step screenshots, real milestones) for the UI."""
+    r = gym_client.run_agent(task_id, body.agent, body.seed)
+    if r is None:
+        raise HTTPException(status_code=502, detail="gym unreachable or run failed")
+    if not (r.get("trajectory") or {}).get("steps"):
+        raise HTTPException(status_code=422, detail="run produced no trajectory (task may lack an oracle solver)")
+    return gym_review.to_review(r, task_id, body.agent)
+
+
+@router.get("/screenshot")
+def gym_screenshot(path: str) -> Response:
+    """Proxy a per-step screenshot PNG from the gym."""
+    png = gym_client.screenshot(path)
+    if png is None:
+        raise HTTPException(status_code=404, detail="screenshot not found")
+    return Response(content=png, media_type="image/png")

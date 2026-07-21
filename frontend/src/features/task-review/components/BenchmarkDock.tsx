@@ -24,7 +24,10 @@ export function BenchmarkDock({
 
   let sub: string;
   if (!benchmarkRun) sub = "Run the benchmark to score every verifier on the final state.";
-  else if (reward === 1) sub = `All ${total} verifiers scored 1 — ready to submit.`;
+  else if (reward === 1)
+    sub = failing === 0
+      ? `All ${total} verifiers scored 1 — ready to submit.`
+      : `Reward 1 — ready to submit (${failing} non-required check${failing > 1 ? "s" : ""} did not fire).`;
   else sub = `${failing} of ${total} verifiers scored 0. Override to submit, or edit a verifier / correct the trace and re-run.`;
 
   return (

@@ -28,7 +28,7 @@ function PagerBox({ dir, onClick, disabled }: { dir: "chevronLeft" | "chevronRig
   );
 }
 
-export function Header({ index, total, onPrev, onNext, onSkip }: { index: number; total: number; onPrev: () => void; onNext: () => void; onSkip: () => void }) {
+export function Header({ index, total, onPrev, onNext, onSkip, onBrowseGym, gymTaskId, onExitGym }: { index: number; total: number; onPrev: () => void; onNext: () => void; onSkip: () => void; onBrowseGym: () => void; gymTaskId?: string | null; onExitGym?: () => void }) {
   const mono = { fontFamily: t.fontMono } as const;
   return (
     <header
@@ -54,16 +54,27 @@ export function Header({ index, total, onPrev, onNext, onSkip }: { index: number
         <span style={{ color: t.n1, fontWeight: weight.semibold }}>Tasking</span>
       </nav>
       <Rule />
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }} title="One task at a time">
-        <PagerBox dir="chevronLeft" onClick={onPrev} disabled={index <= 0} />
-        <span style={{ fontSize: "0.8125rem", fontWeight: weight.semibold, color: t.n1, whiteSpace: "nowrap" }}>
-          Task <span style={mono}>{index + 1}</span> of <span style={mono}>{total}</span>
-        </span>
-        <PagerBox dir="chevronRight" onClick={onNext} disabled={index >= total - 1} />
-        <span onClick={onSkip} style={{ marginLeft: 4, fontSize: "0.78125rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer" }}>
-          Skip
-        </span>
-      </div>
+      {gymTaskId ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: "0.8125rem", fontWeight: weight.semibold, color: t.n1, whiteSpace: "nowrap" }}>
+            Gym · <span style={mono}>{gymTaskId}</span>
+          </span>
+          <span onClick={onExitGym} style={{ marginLeft: 4, fontSize: "0.78125rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer" }}>Samples</span>
+        </div>
+      ) : (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }} title="One task at a time">
+          <PagerBox dir="chevronLeft" onClick={onPrev} disabled={index <= 0} />
+          <span style={{ fontSize: "0.8125rem", fontWeight: weight.semibold, color: t.n1, whiteSpace: "nowrap" }}>
+            Task <span style={mono}>{index + 1}</span> of <span style={mono}>{total}</span>
+          </span>
+          <PagerBox dir="chevronRight" onClick={onNext} disabled={index >= total - 1} />
+          <span onClick={onSkip} style={{ marginLeft: 4, fontSize: "0.78125rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer" }}>Skip</span>
+        </div>
+      )}
+      <span style={{ width: 1, height: 22, background: t.n7 }} />
+      <span onClick={onBrowseGym} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: "0.78125rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer", whiteSpace: "nowrap" }}>
+        <Icon name="swap" size={14} /> Gym tasks
+      </span>
       <span style={{ flex: 1 }} />
       <FocusBadge>Multitab · Web Navigation</FocusBadge>
       <span

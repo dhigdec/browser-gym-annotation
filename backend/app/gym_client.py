@@ -58,5 +58,17 @@ def run_agent(task_id: str, agent: str = "oracle", seed: int = 0) -> dict | None
     return _req("POST", "/_harness/run_agent", {"agent": agent, "task_id": task_id, "seed": seed}, timeout=260)
 
 
+def screenshot(path: str) -> bytes | None:
+    """Fetch a per-step screenshot PNG (raw bytes) from the gym."""
+    import urllib.parse
+    url = settings.gym_url.rstrip("/") + "/_harness/screenshot?path=" + urllib.parse.quote(path, safe="")
+    req = urllib.request.Request(url, headers={"X-Harness-Token": settings.gym_harness_token})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.read()
+    except (urllib.error.URLError, TimeoutError):
+        return None
+
+
 def available() -> bool:
     return _req("GET", "/_harness/tasks") is not None

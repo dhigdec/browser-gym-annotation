@@ -59,6 +59,8 @@ function mapPayload(p: ReviewPayload): ReviewData {
     correctionSeed: p.correctionSeed,
     correctedTail: p.correctedTail,
     verifiers: p.verifiers,
+    source: p.source ?? "fixture",
+    gymReward: p.gymReward,
   };
 }
 
@@ -154,4 +156,35 @@ export function submitSession(
   body: { reward: number; override: boolean; overrideReason?: string; kind?: string },
 ): Promise<SessionSnapshot | null> {
   return post<SessionSnapshot>(`/api/sessions/${sid}/submit`, body);
+}
+
+// ---- real gym tasks (M8) ---------------------------------------------------
+
+export interface GymTaskItem { id: string; category?: string; difficulty?: string }
+
+/** The catalog of real gym tasks (312), or null if the gym is unreachable. */
+export async function fetchGymTasks(): Promise<GymTaskItem[] | null> {
+  try {
+    const res = await fetch("/api/gym/tasks");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = (await res.json()) as { tasks: string[] };
+    return body.tasks.map((id) => ({ id }));
+  } catch {
+    return null;
+  }
+}
+
+/** Run a real agent on a gym task and load it as a review (slow — real browser run). */
+export async function runGymReview(taskId: string, agent = "oracle", seed = 0): Promise<ReviewData | null> {
+  try {
+    const res = await fetch(`/api/gym/tasks/${taskId}/run-review`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent, seed }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return mapPayload((await res.json()) as ReviewPayload);
+  } catch {
+    return null;
+  }
 }

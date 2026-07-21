@@ -186,7 +186,9 @@ export function ReplayPane({
           <div style={{ marginTop: 4, fontSize: "0.75rem", color: t.n3 }}>Captured frame · rendered DOM snapshot</div>
         </div>
         <div style={{ position: "relative", flex: 1, minHeight: 0, marginTop: 8 }}>
-          {step.snapshot ? (
+          {step.image ? (
+            <img src={step.image} alt="captured frame" style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "top center", background: t.n9 }} />
+          ) : step.snapshot ? (
             <iframe title="captured frame" src={`/api/snapshots/${step.snapshot}`} sandbox="allow-same-origin" style={{ width: "100%", height: "100%", border: "none", background: t.n9 }} />
           ) : (
             <div style={{ position: "absolute", inset: 0, overflow: "auto", background: t.n9 }} />

@@ -10,6 +10,8 @@ export interface Step {
   description: string;
   /** captured-snapshot key for this step's page (served at /api/snapshots/{key}). */
   snapshot?: string;
+  /** full image URL for a captured screenshot (gym tasks, M8) — rendered as <img>. */
+  image?: string;
   /** page-level error message shown as the red frame banner (error steps, §2.1). */
   errorMsg?: string;
 }
@@ -30,6 +32,8 @@ export interface Verifier {
   placeholder?: boolean;
   /** Executable check IR (M5) — evaluated by the backend engine. */
   check?: Record<string, unknown>;
+  /** Real milestone result for gym tasks (M8) — "pass" | "fail". */
+  gymResult?: string;
 }
 
 // ---- API shape (returned by the backend) ----------------------------------
@@ -62,6 +66,8 @@ export interface ReviewPayload {
   correctionSeed: string;
   correctedTail: Step[];
   verifiers: Verifier[];
+  source?: "fixture" | "gym";
+  gymReward?: number;
 }
 
 /** A row in the task queue (from GET /api/tasks). */
@@ -100,6 +106,8 @@ export interface ReviewData {
   correctionSeed: string;
   correctedTail: Step[];
   verifiers: Verifier[];
+  source?: "fixture" | "gym";
+  gymReward?: number;
 }
 
 /** Review-flow state machine (mirrors the design's linear gate chain). */

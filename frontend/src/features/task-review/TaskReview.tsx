@@ -1,11 +1,13 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
-import { t, weight } from "../../ds";
+import { Icon, t, weight } from "../../ds";
 import {
+  fetchGymTasks,
   fetchReview,
   fetchTasks,
   openSession,
   patchSession,
   rerunTrajectory,
+  runGymReview,
   runVerifiers,
   saveSuite,
   submitSession,
@@ -74,6 +76,9 @@ interface TaskNav {
   onPrev: () => void;
   onNext: () => void;
   onSkip: () => void;
+  onBrowseGym: () => void;
+  gymTaskId?: string | null;
+  onExitGym?: () => void;
 }
 
 function ReviewScreen({ data, nav }: { data: ReviewData; nav: TaskNav }) {
@@ -126,6 +131,12 @@ function ReviewScreen({ data, nav }: { data: ReviewData; nav: TaskNav }) {
   // Run the verifier suite through the backend execution engine (M5). Falls
   // back to a flag-derived result only when the backend is unreachable.
   const runBenchmark = async () => {
+    // Gym tasks carry the real milestone verdict already (verifierState/reward
+    // read v.gymResult / data.gymReward) — just reveal it.
+    if (data.source === "gym") {
+      dispatch({ t: "benchmarkComplete", results: {} });
+      return;
+    }
     const verifiers = verifierPayloads(state);
     const overrides = Object.keys(state.overrides);
     const corrected = state.rerunFrom != null;
@@ -262,10 +273,65 @@ function ReviewScreen({ data, nav }: { data: ReviewData; nav: TaskNav }) {
   );
 }
 
+function GymPicker({ onClose, onPick }: { onClose: () => void; onPick: (id: string) => void }) {
+  const [all, setAll] = useState<string[] | null>(null);
+  const [q, setQ] = useState("");
+  useEffect(() => { fetchGymTasks().then((ts) => setAll(ts ? ts.map((x) => x.id) : [])); }, []);
+  const list = (all ?? []).filter((id) => id.toLowerCase().includes(q.toLowerCase())).slice(0, 200);
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(13,13,13,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 620, maxHeight: "76vh", background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ padding: "18px 20px 12px", borderBottom: `1px solid ${t.n7}` }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: "1rem", fontWeight: weight.bold, color: t.n0 }}>Load a real gym task</span>
+            <span onClick={onClose} style={{ cursor: "pointer", color: t.n3, display: "inline-flex" }}><Icon name="close" size={18} /></span>
+          </div>
+          <div style={{ marginTop: 4, fontSize: "0.8125rem", color: t.n2 }}>Runs the oracle agent live in the gym, then loads the real run + its milestones to review. {all == null ? "Loading catalog…" : `${all.length} tasks.`}</div>
+          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter tasks — e.g. buy, refund, subscription…" style={{ marginTop: 12, width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, fontFamily: t.fontPrimary, fontSize: "0.875rem", color: t.n0, outline: "none" }} />
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
+          {all == null ? (
+            <div style={{ padding: 24, textAlign: "center", color: t.n3, fontSize: "0.85rem" }}>Fetching the gym catalog…</div>
+          ) : list.length === 0 ? (
+            <div style={{ padding: 24, textAlign: "center", color: t.n3, fontSize: "0.85rem" }}>{all.length === 0 ? "Gym not reachable." : "No tasks match."}</div>
+          ) : (
+            list.map((id) => (
+              <div key={id} onClick={() => onPick(id)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 20px", cursor: "pointer", fontSize: "0.84rem", color: t.n1, borderBottom: `1px solid ${t.n8}` }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = t.surfaceTint)} onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                <span style={{ fontFamily: t.fontMono, fontSize: "0.8rem" }}>{id}</span>
+                <Icon name="chevronRight" size={15} color={t.n4} />
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GymLoading({ taskId }: { taskId: string }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(13,13,13,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }}>
+      <div style={{ width: 420, background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, padding: 26, textAlign: "center" }}>
+        <div style={{ fontSize: "1rem", fontWeight: weight.bold, color: t.n0 }}>Running the agent in the gym…</div>
+        <div style={{ marginTop: 8, fontSize: "0.84rem", color: t.n2, lineHeight: 1.5 }}>Driving a real browser through <span style={{ fontFamily: t.fontMono, fontSize: "0.78rem" }}>{taskId}</span> and scoring it with the real milestone verifiers. This takes a few seconds.</div>
+        <div style={{ marginTop: 16, height: 4, background: t.n7, borderRadius: 3, overflow: "hidden" }}>
+          <div style={{ height: "100%", width: "40%", background: t.primary6, borderRadius: 3, animation: "gymbar 1.1s ease-in-out infinite" }} />
+        </div>
+        <style>{"@keyframes gymbar{0%{margin-left:-40%}100%{margin-left:100%}}"}</style>
+      </div>
+    </div>
+  );
+}
+
 export function TaskReview() {
   const [tasks, setTasks] = useState<TaskListItem[]>([]);
   const [index, setIndex] = useState(0);
   const [data, setData] = useState<ReviewData | null>(null);
+  const [gymData, setGymData] = useState<ReviewData | null>(null);
+  const [gymLoading, setGymLoading] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [gymError, setGymError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -276,7 +342,7 @@ export function TaskReview() {
   const taskId = tasks[index]?.id ?? TASK_ID;
   useEffect(() => {
     let alive = true;
-    setData(null); // show the loader while switching tasks
+    setData(null);
     fetchReview(taskId).then((r) => {
       if (!alive) return;
       setData(r.data);
@@ -286,20 +352,43 @@ export function TaskReview() {
     return () => { alive = false; };
   }, [taskId]);
 
+  const loadGym = async (id: string) => {
+    setPickerOpen(false);
+    setGymError(null);
+    setGymLoading(id);
+    const rv = await runGymReview(id);
+    setGymLoading(null);
+    if (rv) setGymData(rv);
+    else setGymError(id);
+  };
+
   const total = tasks.length || 1;
-  if (!data) {
-    return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: t.n3, fontFamily: t.fontPrimary }}>
-        Loading task…
-      </div>
-    );
-  }
+  const effective = gymData ?? data;
   const nav: TaskNav = {
     index: Math.min(index, total - 1),
     total,
-    onPrev: () => setIndex((i) => Math.max(0, i - 1)),
-    onNext: () => setIndex((i) => Math.min(total - 1, i + 1)),
-    onSkip: () => setIndex((i) => (i + 1) % total),
+    onPrev: () => { setGymData(null); setIndex((i) => Math.max(0, i - 1)); },
+    onNext: () => { setGymData(null); setIndex((i) => Math.min(total - 1, i + 1)); },
+    onSkip: () => { setGymData(null); setIndex((i) => (i + 1) % total); },
+    onBrowseGym: () => setPickerOpen(true),
+    gymTaskId: gymData?.task.id ?? null,
+    onExitGym: () => setGymData(null),
   };
-  return <ReviewScreen key={taskId} data={data} nav={nav} />;
+
+  return (
+    <>
+      {effective ? (
+        <ReviewScreen key={gymData ? `gym:${gymData.task.id}` : taskId} data={effective} nav={nav} />
+      ) : (
+        <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: t.n3, fontFamily: t.fontPrimary }}>Loading task…</div>
+      )}
+      {pickerOpen && <GymPicker onClose={() => setPickerOpen(false)} onPick={loadGym} />}
+      {gymLoading && <GymLoading taskId={gymLoading} />}
+      {gymError && (
+        <div onClick={() => setGymError(null)} style={{ position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", background: t.redLite, color: t.redDark, border: `1px solid color-mix(in srgb, ${t.red} 42%, ${t.n9})`, padding: "10px 16px", borderRadius: t.radiusLg, fontSize: "0.84rem", fontWeight: weight.semibold, zIndex: 70, cursor: "pointer", fontFamily: t.fontPrimary }}>
+          Couldn't run <span style={{ fontFamily: t.fontMono }}>{gymError}</span> — the gym may be down or the task has no oracle solver. Tap to dismiss.
+        </div>
+      )}
+    </>
+  );
 }
