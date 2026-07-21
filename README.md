@@ -22,6 +22,7 @@ end-state verifiers, oracle solvers, 2k+ trajectories) and skinned with the
 | M6 | Re-run as a backend service | immutable, **versioned trajectory branches** |
 | M6b | **Live agent re-run** | a real model generates the corrected continuation |
 | M7 | **Multi-task queue** | task registry + working pager |
+| M6c | **Live-gym bridge** | verify against the **real** gym world (true milestone verdict) |
 
 The full loop runs for real: replay a recorded run → verify each step → correct →
 **live agent re-runs from that state** → the five-level verifier suite **executes**
@@ -89,6 +90,19 @@ docker compose -f infra/docker-compose.yml --env-file infra/.env up -d --build b
 ```
 Without a key, the re-run cleanly falls back to the deterministic gold path (and
 the Semantic verifiers to a deterministic proxy).
+
+**Live gym (M6c, optional).** To verify against the *real* gym world, run the
+`ecommerce-browser-gym` harness and point the annotator at it:
+```bash
+# in the gym repo, separate terminal:
+HARNESS_TOKEN=dev-annotator-token python -m uvicorn server.main:app --port 8000
+# then set the same token for the annotator (gitignored infra/.env):
+echo "GYM_HARNESS_TOKEN=dev-annotator-token" >> infra/.env
+docker compose -f infra/docker-compose.yml --env-file infra/.env up -d backend
+# GET /api/gym/status → {connected:true}; POST /api/gym/verify → the real milestone verdict.
+```
+The gym is reached at `GYM_URL` (default `http://host.docker.internal:8000` in
+Docker). If it isn't running, the bridge degrades to a clean 502.
 
 ## Prerequisites
 Node 20+, Python 3.12, Postgres 16/17 (native or via Docker), Docker (optional, for the full stack).
