@@ -25,6 +25,7 @@ from app.models import (
     ReviewSession,
     Submission,
     Task,
+    TrajectoryBranch,
     Verifier,
     VerifierSuite,
 )
@@ -71,6 +72,12 @@ class RunBody(BaseModel):
     corrected: bool = False
     verifiers: list[dict] = []
     overrides: list[str] = []
+
+
+class RerunBody(BaseModel):
+    fromStep: int
+    correction: str = ""
+    mode: str = "deterministic"  # deterministic (oracle/gold path) | agent (live, M6b)
 
 
 class SubmitBody(BaseModel):
@@ -189,6 +196,15 @@ def _get_session(db: Session, session_id: UUID) -> ReviewSession:
     return s
 
 
+def _branch_for(correction: str, mode: str) -> list[dict]:
+    """The corrected continuation. `deterministic` returns the ground-truth gold
+    path from the fixture (no model call). A live agent (`mode='agent'`) would
+    replace this with a real re-run from the corrected browser state — the M6b
+    plug-point, gated on API cost."""
+    # mode == "agent" would call the gym harness here; deterministic for now.
+    return _FIXTURE.get("correctedTail", [])
+
+
 # ---- endpoints -------------------------------------------------------------
 
 
@@ -234,6 +250,35 @@ def patch_session(session_id: UUID, body: PatchSessionBody, db: Session = Depend
     db.commit()
     db.refresh(s)
     return _snapshot(db, s)
+
+
+@router.post("/sessions/{session_id}/rerun")
+def rerun(session_id: UUID, body: RerunBody, db: Session = Depends(get_db)) -> dict:
+    """Re-run the agent from a corrected step. Persists an IMMUTABLE branch —
+    versioned via parent_id, never overwritten — capturing the human correction.
+    The continuation is deterministic today; a live agent plugs in at mode='agent'."""
+    s = _get_session(db, session_id)
+    branch_steps = _branch_for(body.correction, body.mode)
+    parent = db.scalar(
+        select(TrajectoryBranch)
+        .where(TrajectoryBranch.session_id == s.id)
+        .order_by(TrajectoryBranch.created_at.desc())
+    )
+    br = TrajectoryBranch(
+        session_id=s.id,
+        parent_id=parent.id if parent else None,
+        from_step=body.fromStep,
+        correction=body.correction,
+        mode=body.mode,
+        steps={"steps": branch_steps},
+    )
+    db.add(br)
+    # Correcting re-forks the trace and re-locks the review (spec §3.25).
+    s.rerun_from = body.fromStep
+    s.status = "draft"
+    _audit(db, "", "agent.rerun", str(s.id), {"fromStep": body.fromStep, "mode": body.mode, "correction": body.correction[:200]})
+    db.commit()
+    return {"fromStep": body.fromStep, "mode": body.mode, "steps": branch_steps}
 
 
 @router.put("/sessions/{session_id}/suite")

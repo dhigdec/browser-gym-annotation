@@ -109,4 +109,6 @@ export interface ReviewState {
   edits: Record<string, { assertion: string; code: string }>;
   /** real per-verifier results from the last benchmark run (M5), keyed by id. */
   results: Record<string, string>;
+  /** server-computed corrected branch (M6); null → offline fixture tail. */
+  branchTail: Step[] | null;
 }

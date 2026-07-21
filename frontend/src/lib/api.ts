@@ -1,6 +1,6 @@
 import { APP_COLOR } from "./appColors";
 import { reviewFixture } from "../fixtures/reviewPayload";
-import type { ReviewData, ReviewPayload } from "./types";
+import type { ReviewData, ReviewPayload, Step } from "./types";
 
 export type SessionStatus =
   | "draft"
@@ -122,6 +122,14 @@ export function runVerifiers(
   body: { corrected: boolean; verifiers: unknown[]; overrides: string[] },
 ): Promise<RunResult | null> {
   return post<RunResult>(`/api/sessions/${sid}/run`, body);
+}
+
+/** Re-run from a corrected step — persists an immutable branch, returns its steps. */
+export function rerunTrajectory(
+  sid: string,
+  body: { fromStep: number; correction: string; mode?: string },
+): Promise<{ fromStep: number; mode: string; steps: Step[] } | null> {
+  return post<{ fromStep: number; mode: string; steps: Step[] }>(`/api/sessions/${sid}/rerun`, body);
 }
 
 export function submitSession(

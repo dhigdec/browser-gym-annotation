@@ -4,11 +4,12 @@ import {
   fetchReview,
   openSession,
   patchSession,
+  rerunTrajectory,
   runVerifiers,
   saveSuite,
   submitSession,
 } from "../../lib/api";
-import type { ReviewData, Verifier } from "../../lib/types";
+import type { ReviewData, Step, Verifier } from "../../lib/types";
 import {
   isResolved,
   isVerified,
@@ -203,7 +204,15 @@ function ReviewScreen({ data }: { data: ReviewData }) {
               onVerify={() => dispatch({ t: "verifyStep" })}
               onStartCorrect={() => setCorrecting(true)}
               onCancelCorrect={() => setCorrecting(false)}
-              onSaveCorrect={() => { dispatch({ t: "correctAndRerun", fromStep: current.idx }); setCorrecting(false); }}
+              onSaveCorrect={async (text) => {
+                setCorrecting(false);
+                let branch: Step[] | null = null;
+                if (sessionId) {
+                  const out = await rerunTrajectory(sessionId, { fromStep: current.idx, correction: text });
+                  if (out) branch = out.steps;
+                }
+                dispatch({ t: "correctAndRerun", fromStep: current.idx, branch });
+              }}
             />
             <Scrubber steps={steps} step={state.step} playing={state.playing} onPlayToggle={() => dispatch({ t: "playToggle" })} onStepTo={(i) => dispatch({ t: "stepTo", i })} />
             <ActionTrace

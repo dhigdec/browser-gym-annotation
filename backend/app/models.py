@@ -95,6 +95,23 @@ class Submission(Base):
     created_at: Mapped[datetime] = mapped_column(default=func.now())
 
 
+class TrajectoryBranch(Base):
+    """An immutable corrected re-run branch. Every correction creates a new
+    version (chained via parent_id); nothing is overwritten. `mode` records how
+    the continuation was produced — deterministic (oracle/gold path) today, or
+    `agent` once a live agent re-runs from the corrected state (M6b)."""
+
+    __tablename__ = "trajectory_branch"
+    id: Mapped[UUID] = _pk()
+    session_id: Mapped[UUID] = mapped_column(ForeignKey("review_session.id"))
+    parent_id: Mapped[UUID | None] = mapped_column(ForeignKey("trajectory_branch.id"), nullable=True)
+    from_step: Mapped[int] = mapped_column()
+    correction: Mapped[str] = mapped_column(Text, default="")
+    mode: Mapped[str] = mapped_column(String(16), default="deterministic")  # deterministic | agent
+    steps: Mapped[dict] = mapped_column(JSON, default=dict)  # the continuation steps
+    created_at: Mapped[datetime] = mapped_column(default=func.now())
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
     id: Mapped[UUID] = _pk()

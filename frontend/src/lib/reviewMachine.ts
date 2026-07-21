@@ -27,6 +27,7 @@ export function makeInitialState(data: ReviewData): ReviewState {
     added: [],
     edits: {},
     results: {},
+    branchTail: null,
   };
 }
 
@@ -44,7 +45,7 @@ export type Action =
   | { t: "approveRemaining" }
   | { t: "generate" }
   | { t: "benchmarkComplete"; results: Record<string, string> }
-  | { t: "correctAndRerun"; fromStep: number }
+  | { t: "correctAndRerun"; fromStep: number; branch: Step[] | null }
   | { t: "setLevel"; level: VerifierLevel }
   | { t: "addVerifier"; verifier: Verifier }
   | { t: "removeVerifier"; id: string }
@@ -92,6 +93,7 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
       return {
         ...s,
         rerunFrom: a.fromStep,
+        branchTail: a.branch,
         verifiedThrough: total,
         stepsApproved: false,
         verifiersGenerated: false,
@@ -148,7 +150,9 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
 export function visibleSteps(s: ReviewState): Step[] {
   if (s.rerunFrom == null) return s.data.steps;
   const ei = errorIndex(s.data.steps);
-  return [...s.data.steps.slice(0, ei + 1), ...s.data.correctedTail];
+  // Prefer the server-computed branch (M6); fall back to the offline fixture tail.
+  const tail = s.branchTail ?? s.data.correctedTail;
+  return [...s.data.steps.slice(0, ei + 1), ...tail];
 }
 
 export function runSummary(s: ReviewState): Metric[] {
