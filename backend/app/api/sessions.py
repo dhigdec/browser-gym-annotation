@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agent import generate_branch
+from app.agent import deterministic_branch, generate_branch
 from app.api.tasks import _FIXTURE, task_fixture
 from app.db import get_db
 from app.verify import evaluate
@@ -268,10 +268,21 @@ def _get_session(db: Session, session_id: UUID) -> ReviewSession:
     return s
 
 
+_EMPTY_FIXTURE = {"task": {"prompt": ""}, "steps": [], "correctedTail": [], "finalState": {"original": {}, "corrected": {}}, "tabs": []}
+
+
 def _session_fixture(db: Session, s: ReviewSession) -> dict:
-    """The task fixture this session is reviewing (M7)."""
+    """The task fixture this session is reviewing (M7). A gym-sourced session has
+    no hand-authored fixture — return an EMPTY one so backend-state checks fail
+    closed, rather than silently borrowing an unrelated fixture's finalState."""
     task = db.get(Task, s.task_id)
-    return (task_fixture(task.external_id) if task else None) or _FIXTURE
+    if task is not None:
+        fx = task_fixture(task.external_id)
+        if fx is not None:
+            return fx
+        if s.source == "gym" or task.source == "gym":
+            return {**_EMPTY_FIXTURE, "task": {"prompt": task.prompt or ""}}
+    return _FIXTURE
 
 
 def _branch_for(correction: str, mode: str, from_step: int, fixture: dict) -> tuple[list[dict], str]:
@@ -282,7 +293,7 @@ def _branch_for(correction: str, mode: str, from_step: int, fixture: dict) -> tu
         generated = generate_branch(fixture, from_step, correction)
         if generated:
             return generated, "agent"
-    return fixture.get("correctedTail", []), "deterministic"
+    return deterministic_branch(fixture, from_step, correction), "deterministic"
 
 
 # ---- endpoints -------------------------------------------------------------

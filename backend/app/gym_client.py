@@ -48,6 +48,12 @@ def world() -> dict | None:
     return _req("GET", "/_harness/world")
 
 
+def state() -> dict | None:
+    """The real post-run shop GymState (cart / orders / returns / subscriptions /
+    account) read-only from GET /_harness/state — the true world the agent left."""
+    return _req("GET", "/_harness/state")
+
+
 def verify(step: int = 0) -> dict | None:
     return _req("POST", "/_harness/verify", {"step": step})
 

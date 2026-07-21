@@ -1,6 +1,22 @@
 """The live-agent module — parsing + the no-key deterministic fallback."""
 
-from app.agent import _extract_json_array, generate_branch, judge
+from app.agent import _extract_json_array, deterministic_branch, generate_branch, judge
+
+
+def test_deterministic_branch_respects_from_step():
+    fixture = {"correctedTail": [{"idx": 13, "type": "navigate", "description": "a"},
+                                 {"idx": 14, "type": "submit", "description": "b"},
+                                 {"idx": 15, "type": "tab", "description": "c"}]}
+    # Correcting at the authored fork (12) keeps all three, re-indexed 13,14,15.
+    at12 = deterministic_branch(fixture, 12, "fix")
+    assert [s["idx"] for s in at12] == [13, 14, 15]
+    # Correcting earlier (7) re-indexes the continuation contiguously from 8 —
+    # NOT the old canned idx 13-15.
+    at7 = deterministic_branch(fixture, 7, "fix")
+    assert [s["idx"] for s in at7] == [8, 9, 10]
+    # Correcting at/after the last tail step rebases the whole tail after it.
+    at15 = deterministic_branch(fixture, 15, "fix")
+    assert [s["idx"] for s in at15] == [16, 17, 18]
 
 
 def test_judge_without_key_returns_none(monkeypatch):

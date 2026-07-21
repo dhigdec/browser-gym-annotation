@@ -119,6 +119,26 @@ def _tab_snapshot(tab_id: str, fixture: dict) -> str | None:
     return None
 
 
+def deterministic_branch(fixture: dict, from_step: int, correction: str) -> list[dict]:
+    """The deterministic (gold-path) continuation after a correction at from_step.
+
+    Unlike the old behaviour — which returned the authored `correctedTail`
+    verbatim, ignoring where the human actually corrected — this respects
+    from_step: it keeps only tail steps *after* the correction point and
+    re-indexes the continuation contiguously from from_step+1, so the fork is
+    consistent with the correction. It is still a fixture gold path (no live
+    world), but an honest one; the correction text is captured on the persisted
+    branch record. For a genuine re-execution use mode='agent' (live model), or
+    a gym-sourced review (re-run in the live gym)."""
+    tail = fixture.get("correctedTail") or []
+    kept = [dict(s) for s in tail if int(s.get("idx", 0)) > from_step]
+    if not kept:  # corrected at/after the authored fork — rebase the whole tail
+        kept = [dict(s) for s in tail]
+    for i, s in enumerate(kept):
+        s["idx"] = from_step + 1 + i
+    return kept
+
+
 def generate_branch(fixture: dict, from_step: int, correction: str) -> list[dict] | None:
     """Return the model-generated continuation steps, or None to fall back."""
     if not settings.anthropic_api_key.strip():

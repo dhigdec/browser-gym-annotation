@@ -59,7 +59,15 @@ def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review
     for v in review["verifiers"]:
         db.add(models.Verifier(suite_id=suite.id, level=v["level"], assertion=v["assertion"], code=v["code"], gym_result=v.get("gymResult", "")))
     db.add(models.BenchmarkRun(suite_id=suite.id, reward=review.get("gymReward", 0), results={v["id"]: v.get("gymResult") for v in review["verifiers"]}))
-    db.add(models.AuditLog(session_id=s.id, actor=ann.email, action="gym.review", target=task_id, meta={"agent": agent, "score": vr.get("score"), "success": vr.get("success")}))
+    bs = review.get("backendState") or {}
+    world_summary = {
+        "orders": len(bs.get("orders", []) or []),
+        "cart_items": len((bs.get("cart", {}) or {}).get("items", []) or []),
+        "returns": len(bs.get("returns", []) or []),
+        "subscriptions": len(bs.get("subscriptions", []) or []),
+        "user": bs.get("current_user_id"),
+    }
+    db.add(models.AuditLog(session_id=s.id, actor=ann.email, action="gym.review", target=task_id, meta={"agent": agent, "score": vr.get("score"), "success": vr.get("success"), "world": world_summary}))
     db.commit()
     return str(s.id)
 
@@ -135,6 +143,7 @@ def gym_run_review(task_id: str, body: RunReviewBody, db: Session = Depends(get_
     if not (r.get("trajectory") or {}).get("steps"):
         raise HTTPException(status_code=422, detail="run produced no trajectory (task may lack an oracle solver)")
     review = gym_review.to_review(r, task_id, body.agent)
+    review["backendState"] = gym_client.state()  # the REAL post-run world (cart/orders/returns/account)
     try:
         review["sessionId"] = _persist_gym_review(db, task_id, body.agent, r, review)
         review["persisted"] = True
