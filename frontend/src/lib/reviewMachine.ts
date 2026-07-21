@@ -86,11 +86,15 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
     case "benchmarkComplete":
       return s.verifiersGenerated ? { ...s, benchmarkRun: true, results: a.results } : s;
     case "correctAndRerun":
+      // Correcting a step re-forks the trace and RE-LOCKS Section 2 entirely
+      // (spec §3.25): the annotator must re-approve, re-generate, and re-run.
+      // The re-run steps are auto-marked reviewed (Reviewed N/N, spec §2.3).
       return {
         ...s,
         rerunFrom: a.fromStep,
         verifiedThrough: total,
-        stepsApproved: true,
+        stepsApproved: false,
+        verifiersGenerated: false,
         benchmarkRun: false,
         results: {},
         overrides: {},
@@ -105,8 +109,13 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
       return { ...s, added: s.added.filter((v) => v.id !== a.id), benchmarkRun: false, results: {} };
     case "editVerifier":
       return { ...s, edits: { ...s.edits, [a.id]: { assertion: a.assertion, code: a.code } }, benchmarkRun: false, results: {}, submitted: false };
-    case "override":
-      return { ...s, overrides: { ...s.overrides, [a.id]: true }, submitted: false };
+    case "override": {
+      // Toggle: clicking the "1 override" pill removes the override (spec §3.2).
+      const next = { ...s.overrides };
+      if (next[a.id]) delete next[a.id];
+      else next[a.id] = true;
+      return { ...s, overrides: next, submitted: false };
+    }
     case "submit":
       return canSubmit(s) ? { ...s, submitted: true } : s;
     case "hydrate": {
@@ -185,6 +194,36 @@ export function failingCount(s: ReviewState): number {
 
 export function canSubmit(s: ReviewState): boolean {
   return s.benchmarkRun && reward(s) === 1;
+}
+
+// ---- per-step review status (spec §2.3 / §2.1) ----------------------------
+
+export type StepStatus = "verified" | "corrected" | "rerun" | "pending";
+
+/** The trace status-circle variant for a step. */
+export function stepStatus(s: ReviewState, step: Step): StepStatus {
+  if (s.rerunFrom != null) {
+    if (step.idx === s.rerunFrom) return "corrected";
+    if (step.idx > s.rerunFrom) return "rerun";
+  }
+  return step.idx <= s.verifiedThrough ? "verified" : "pending";
+}
+
+/** A corrected or re-run step — its overlay shows the "Re-run branch" pill
+ *  instead of Verify/Correct, and it can't be re-verified. */
+export function isResolved(s: ReviewState, step: Step): boolean {
+  return s.rerunFrom != null && step.idx >= s.rerunFrom;
+}
+
+/** Whether a step has already been reviewed (drives the Verify → Verified flip). */
+export function isVerified(s: ReviewState, step: Step): boolean {
+  return step.idx <= s.verifiedThrough;
+}
+
+/** The index of the first re-run step, for placing the fork divider. */
+export function forkIndex(s: ReviewState, steps: Step[]): number {
+  if (s.rerunFrom == null) return -1;
+  return steps.findIndex((st) => st.idx > s.rerunFrom!);
 }
 
 // ---- persistence projections (M4) -----------------------------------------

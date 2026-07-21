@@ -19,7 +19,7 @@ function LevelChip({ level, muted }: { level: VerifierLevel; muted?: boolean }) 
   const L = VERIFIER_LEVEL[level];
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "6px 12px", borderRadius: t.radiusPill, background: t.n85, border: `1px solid ${t.n7}`, fontSize: "0.8125rem", fontWeight: weight.semibold, color: muted ? t.n3 : t.n1 }}>
-      <span style={{ width: 8, height: 8, borderRadius: t.radiusFull, background: L.color }} />
+      <span style={{ width: 8, height: 8, borderRadius: 2, background: L.color }} />
       {L.label}
     </span>
   );
@@ -82,7 +82,13 @@ function VerifierRow({ v, state, benchmarkRun, onOverride, onEdit }: { v: Verifi
         <span onClick={() => onOverride(v.id)} style={{ fontSize: "0.75rem", fontWeight: weight.semibold, color: t.red, cursor: "pointer", whiteSpace: "nowrap" }}>Override</span>
       )}
       {benchmarkRun && state.overrides[v.id] && (
-        <Tag tone="tinted" color={t.yellow} style={{ fontSize: "0.68rem" }}>overridden</Tag>
+        <span
+          onClick={() => onOverride(v.id)}
+          title="Remove override"
+          style={{ cursor: "pointer", fontSize: "0.68rem", fontWeight: weight.bold, color: t.purple, background: `color-mix(in srgb, ${t.purple} 12%, transparent)`, padding: "4px 9px", borderRadius: t.radiusMd, whiteSpace: "nowrap" }}
+        >
+          1 override
+        </span>
       )}
       <Meter state={meterState} />
       <span onClick={startEdit} style={{ cursor: "pointer", display: "inline-flex" }} title="Edit check">

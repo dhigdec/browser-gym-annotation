@@ -1,5 +1,5 @@
-import type { ReactNode } from "react";
-import { Icon, Tag, t, weight } from "../../../ds";
+import { useState, type ReactNode } from "react";
+import { Button, Icon, Tag, t, weight } from "../../../ds";
 import type { Metric, Task } from "../../../lib/types";
 
 function Label({ children, action }: { children: ReactNode; action?: ReactNode }) {
@@ -19,7 +19,11 @@ function metricColor(tone: Metric["tone"]) {
   return t.n0;
 }
 
-export function RightPanel({ task, summary }: { task: Task; summary: Metric[] }) {
+export function RightPanel({ task, summary, onSavePrompt }: { task: Task; summary: Metric[]; onSavePrompt?: (text: string) => void }) {
+  const [editingPrompt, setEditingPrompt] = useState(false);
+  const [promptText, setPromptText] = useState(task.prompt);
+  const startEdit = () => { setPromptText(task.prompt); setEditingPrompt(true); };
+  const savePrompt = () => { onSavePrompt?.(promptText.trim() || task.prompt); setEditingPrompt(false); };
   return (
     <aside
       style={{
@@ -47,10 +51,27 @@ export function RightPanel({ task, summary }: { task: Task; summary: Metric[] })
       </h1>
       <div style={{ fontSize: "0.8125rem", color: t.n3 }}>{task.meta}</div>
 
-      <Label action={<span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.75rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer" }}><Icon name="pencil" size={13} /> Edit</span>}>
+      <Label action={!editingPrompt && (
+        <span onClick={startEdit} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.75rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer" }}><Icon name="pencil" size={13} /> Edit</span>
+      )}>
         Task prompt
       </Label>
-      <p style={{ margin: 0, fontSize: "0.84rem", lineHeight: 1.5, color: t.n1 }}>{task.prompt}</p>
+      {editingPrompt ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <textarea
+            value={promptText}
+            onChange={(e) => setPromptText(e.target.value)}
+            autoFocus
+            style={{ width: "100%", boxSizing: "border-box", minHeight: 128, resize: "vertical", padding: "10px 12px", border: `1px solid ${t.primary6}`, borderRadius: t.radiusLg, fontFamily: t.fontPrimary, fontSize: "0.8125rem", lineHeight: 1.55, color: t.n0, outline: "none" }}
+          />
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <Button variant="secondary" onClick={() => setEditingPrompt(false)}>Cancel</Button>
+            <Button onClick={savePrompt}>Save prompt</Button>
+          </div>
+        </div>
+      ) : (
+        <p style={{ margin: 0, fontSize: "0.84rem", lineHeight: 1.5, color: t.n1 }}>{task.prompt}</p>
+      )}
 
       <Label>Start state</Label>
       <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.8125rem", color: t.n2 }}>

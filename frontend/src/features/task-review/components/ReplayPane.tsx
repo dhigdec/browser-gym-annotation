@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Button, Icon, t, weight, ACTION_COLOR } from "../../../ds";
 import type { Step, Tab } from "../../../lib/types";
 
@@ -107,17 +108,55 @@ function GenericFrame({ tab }: { tab: Tab }) {
   );
 }
 
-function StepOverlay({ step, stepNumber, onVerify, onCorrect }: { step: Step; stepNumber: number; onVerify: () => void; onCorrect: () => void }) {
+/** Inline correction editor — replaces the step card in place (spec §2.1b). */
+function CorrectionEditor({ stepNumber, seed, onCancel, onSave }: { stepNumber: number; seed: string; onCancel: () => void; onSave: (text: string) => void }) {
+  const [text, setText] = useState(seed);
+  useEffect(() => setText(seed), [seed]);
+  return (
+    <div style={{ position: "absolute", left: 16, right: 16, bottom: 14, padding: 14, background: t.n9, border: `1px solid ${t.primary6}`, borderRadius: t.radiusLg, boxShadow: t.shadowXl }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <Icon name="pencil" size={16} color={t.primary6} />
+        <span style={{ fontSize: "0.84rem", fontWeight: weight.bold, color: t.n0 }}>Correct step {stepNumber}</span>
+        <span style={{ fontSize: "0.75rem", color: t.n3 }}>Edit the action; the agent re-runs from this state.</span>
+      </div>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        autoFocus
+        style={{ width: "100%", boxSizing: "border-box", minHeight: 52, resize: "none", padding: "9px 12px", border: `1px solid ${t.primary6}`, borderRadius: t.radiusLg, fontFamily: t.fontPrimary, fontSize: "0.8125rem", lineHeight: 1.5, color: t.n0, outline: "none" }}
+      />
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
+        <span style={{ flex: 1, fontSize: "0.72rem", color: t.n3 }}>Steps after this point are discarded and re-generated.</span>
+        <Button variant="secondary" onClick={onCancel}>Cancel</Button>
+        <Button onClick={() => onSave(text)}>Re-run from step {stepNumber}</Button>
+      </div>
+    </div>
+  );
+}
+
+function StepCard({ step, stepNumber, resolved, verified, onVerify, onCorrect }: { step: Step; stepNumber: number; resolved: boolean; verified: boolean; onVerify: () => void; onCorrect: () => void }) {
   const isError = step.type === "error";
   const color = ACTION_COLOR[step.type];
+  const pink = ACTION_COLOR.tab;
   return (
     <div style={{ position: "absolute", left: 16, right: 16, bottom: 14, display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: t.n9, border: `1px solid ${t.n7}`, borderLeft: `3px solid ${isError ? t.red : color}`, borderRadius: t.radiusLg, boxShadow: t.shadowLg }}>
+      <span style={{ width: 9, height: 9, borderRadius: t.radiusFull, background: isError ? t.red : color, flexShrink: 0 }} />
       <span style={{ fontFamily: t.fontMono, fontSize: "0.7rem", fontWeight: weight.bold, letterSpacing: "0.03em", color: isError ? t.red : color, textTransform: "uppercase", whiteSpace: "nowrap" }}>
         Step {stepNumber} · {step.type}
       </span>
-      <span style={{ flex: 1, fontSize: "0.875rem", fontWeight: weight.semibold, color: t.n0 }}>{step.description}</span>
-      <Button variant="secondary" leading={<Icon name="check" size={15} />} onClick={onVerify}>Verify</Button>
-      <Button variant="soft" leading={<Icon name="pencil" size={14} />} onClick={onCorrect}>Correct</Button>
+      <span style={{ flex: 1, fontSize: "0.875rem", fontWeight: weight.semibold, color: t.n0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{step.description}</span>
+      {resolved ? (
+        <span style={{ fontFamily: t.fontMono, fontSize: "0.66rem", fontWeight: weight.bold, textTransform: "uppercase", letterSpacing: "0.04em", color: pink, background: `color-mix(in srgb, ${pink} 12%, transparent)`, padding: "5px 10px", borderRadius: t.radiusMd, whiteSpace: "nowrap" }}>Re-run branch</span>
+      ) : (
+        <>
+          {verified ? (
+            <Button variant="secondary" leading={<Icon name="check" size={15} stroke={2.4} color={t.greenDark} />} style={{ background: t.greenLite, borderColor: t.green, color: t.greenDark }} onClick={onVerify}>Verified</Button>
+          ) : (
+            <Button variant="secondary" leading={<Icon name="check" size={15} />} onClick={onVerify}>Verify</Button>
+          )}
+          <Button variant="soft" leading={<Icon name="pencil" size={14} />} onClick={onCorrect}>Correct</Button>
+        </>
+      )}
     </div>
   );
 }
@@ -129,8 +168,14 @@ export function ReplayPane({
   step,
   stepNumber,
   corrected,
+  resolved,
+  verified,
+  correcting,
+  correctionSeed,
   onVerify,
-  onCorrect,
+  onStartCorrect,
+  onCancelCorrect,
+  onSaveCorrect,
 }: {
   tabs: Tab[];
   activeTabId: string;
@@ -138,8 +183,14 @@ export function ReplayPane({
   step: Step;
   stepNumber: number;
   corrected: boolean;
+  resolved: boolean;
+  verified: boolean;
+  correcting: boolean;
+  correctionSeed: string;
   onVerify: () => void;
-  onCorrect: () => void;
+  onStartCorrect: () => void;
+  onCancelCorrect: () => void;
+  onSaveCorrect: (text: string) => void;
 }) {
   const activeTab = tabs.find((tb) => tb.id === activeTabId) ?? tabs[0];
   const showOverlay = step.tabId === activeTabId;
@@ -158,7 +209,12 @@ export function ReplayPane({
               {activeTab.id === "shop" ? <ShopCheckoutFrame corrected={corrected} /> : <GenericFrame tab={activeTab} />}
             </div>
           )}
-          {showOverlay && <StepOverlay step={step} stepNumber={stepNumber} onVerify={onVerify} onCorrect={onCorrect} />}
+          {showOverlay &&
+            (correcting ? (
+              <CorrectionEditor stepNumber={stepNumber} seed={correctionSeed} onCancel={onCancelCorrect} onSave={onSaveCorrect} />
+            ) : (
+              <StepCard step={step} stepNumber={stepNumber} resolved={resolved} verified={verified} onVerify={onVerify} onCorrect={onStartCorrect} />
+            ))}
         </div>
       </div>
     </div>

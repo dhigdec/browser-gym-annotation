@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
-import { Button, t, weight } from "../../ds";
+import { t, weight } from "../../ds";
 import {
   fetchReview,
   openSession,
@@ -10,6 +10,8 @@ import {
 } from "../../lib/api";
 import type { ReviewData, Verifier } from "../../lib/types";
 import {
+  isResolved,
+  isVerified,
   makeInitialState,
   offlineResults,
   reducer,
@@ -57,24 +59,6 @@ function SaveBadge({ sessionId, status }: { sessionId: string | null; status: st
   );
 }
 
-function CorrectModal({ seed, onCancel, onSave }: { seed: string; onCancel: () => void; onSave: () => void }) {
-  const [text, setText] = useState(seed);
-  return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(13,13,13,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 40 }} onClick={onCancel}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 560, background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, padding: 22 }}>
-        <div style={{ fontSize: "1rem", fontWeight: weight.bold, color: t.n0 }}>Correct this step</div>
-        <div style={{ marginTop: 4, fontSize: "0.8125rem", color: t.n2 }}>Describe the correct action. The agent re-runs from this state.</div>
-        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={3} style={{ marginTop: 14, width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, fontFamily: t.fontPrimary, fontSize: "0.875rem", color: t.n0, resize: "vertical", outline: "none" }} />
-        <div style={{ marginTop: 8, fontSize: "0.72rem", color: t.n3 }}>Steps after this point are discarded and re-generated.</div>
-        <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end", gap: 10 }}>
-          <Button variant="secondary" onClick={onCancel}>Cancel</Button>
-          <Button onClick={onSave}>Save &amp; re-run</Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function Frame({ children }: { children: ReactNode }) {
   return (
     <div style={{ width: 1440, margin: "0 auto", minHeight: "100vh", display: "flex", flexDirection: "column", background: t.n85, border: `1px solid ${t.n7}` }}>
@@ -87,6 +71,7 @@ function ReviewScreen({ data }: { data: ReviewData }) {
   const [state, dispatch] = useReducer(reducer, data, makeInitialState);
   const [correcting, setCorrecting] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [promptOverride, setPromptOverride] = useState<string | null>(null);
 
   useEffect(() => {
     if (!state.playing) return;
@@ -155,12 +140,12 @@ function ReviewScreen({ data }: { data: ReviewData }) {
     }
   }, [sessionId, status]);
 
-  // Correction fork — persist the re-run point.
+  // Correction fork — persist the re-run point (correcting re-locks Section 2).
   useEffect(() => {
     if (!sessionId || state.rerunFrom === rerunRef.current) return;
     rerunRef.current = state.rerunFrom;
     if (state.rerunFrom != null) {
-      void patchSession(sessionId, { rerunFrom: state.rerunFrom, status: "steps_approved" });
+      void patchSession(sessionId, { rerunFrom: state.rerunFrom });
     }
   }, [sessionId, state.rerunFrom]);
 
@@ -211,8 +196,14 @@ function ReviewScreen({ data }: { data: ReviewData }) {
               step={current}
               stepNumber={current.idx}
               corrected={state.rerunFrom != null}
+              resolved={isResolved(state, current)}
+              verified={isVerified(state, current)}
+              correcting={correcting}
+              correctionSeed={current.type === "error" ? data.correctionSeed : current.description}
               onVerify={() => dispatch({ t: "verifyStep" })}
-              onCorrect={() => setCorrecting(true)}
+              onStartCorrect={() => setCorrecting(true)}
+              onCancelCorrect={() => setCorrecting(false)}
+              onSaveCorrect={() => { dispatch({ t: "correctAndRerun", fromStep: current.idx }); setCorrecting(false); }}
             />
             <Scrubber steps={steps} step={state.step} playing={state.playing} onPlayToggle={() => dispatch({ t: "playToggle" })} onStepTo={(i) => dispatch({ t: "stepTo", i })} />
             <ActionTrace
@@ -221,12 +212,13 @@ function ReviewScreen({ data }: { data: ReviewData }) {
               verifiedThrough={state.verifiedThrough}
               stepsApproved={state.stepsApproved}
               remaining={remaining}
+              rerunFrom={state.rerunFrom}
               tabs={data.tabs}
               onStepTo={(i) => dispatch({ t: "stepTo", i })}
               onApproveRemaining={() => dispatch({ t: "approveRemaining" })}
             />
           </main>
-          <RightPanel task={data.task} summary={runSummary(state)} />
+          <RightPanel task={promptOverride ? { ...data.task, prompt: promptOverride } : data.task} summary={runSummary(state)} onSavePrompt={setPromptOverride} />
         </div>
       </div>
 
@@ -244,13 +236,6 @@ function ReviewScreen({ data }: { data: ReviewData }) {
         />
       </div>
 
-      {correcting && (
-        <CorrectModal
-          seed={data.correctionSeed}
-          onCancel={() => setCorrecting(false)}
-          onSave={() => { dispatch({ t: "correctAndRerun", fromStep: current.idx }); setCorrecting(false); }}
-        />
-      )}
     </Frame>
   );
 }
