@@ -147,10 +147,19 @@ export function ReplayPane({
     <div style={{ flex: 1, minHeight: 0, background: t.n9, border: `1px solid ${t.n7}`, borderRadius: t.radiusXl, boxShadow: t.shadowMd, overflow: "hidden", display: "flex", flexDirection: "column" }}>
       <TabStrip tabs={tabs} activeId={activeTabId} onSelect={onSelectTab} />
       <UrlBar host={activeTab.host} />
-      <div style={{ position: "relative", flex: 1, minHeight: 0, overflow: "auto", background: t.n9 }}>
-        <div style={{ padding: "8px 20px 0", fontSize: "0.72rem", color: t.n3 }}>Captured frame · rendered DOM snapshot</div>
-        {activeTab.id === "shop" ? <ShopCheckoutFrame corrected={corrected} /> : <GenericFrame tab={activeTab} />}
-        {showOverlay && <StepOverlay step={step} stepNumber={stepNumber} onVerify={onVerify} onCorrect={onCorrect} />}
+      <div style={{ position: "relative", flex: 1, minHeight: 0, overflow: "hidden", background: t.n9, display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "6px 20px", fontSize: "0.72rem", color: t.n3, flexShrink: 0 }}>Captured frame · rendered DOM snapshot</div>
+        <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
+          {step.snapshot ? (
+            // Real captured page (self-contained HTML), sandboxed for display only.
+            <iframe title="captured frame" src={`/api/snapshots/${step.snapshot}`} sandbox="allow-same-origin" style={{ width: "100%", height: "100%", border: "none", background: t.n9 }} />
+          ) : (
+            <div style={{ position: "absolute", inset: 0, overflow: "auto" }}>
+              {activeTab.id === "shop" ? <ShopCheckoutFrame corrected={corrected} /> : <GenericFrame tab={activeTab} />}
+            </div>
+          )}
+          {showOverlay && <StepOverlay step={step} stepNumber={stepNumber} onVerify={onVerify} onCorrect={onCorrect} />}
+        </div>
       </div>
     </div>
   );

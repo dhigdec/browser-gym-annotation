@@ -8,6 +8,8 @@ export interface Step {
   type: ActionType;
   tabId: string;
   description: string;
+  /** captured-snapshot key for this step's page (served at /api/snapshots/{key}). */
+  snapshot?: string;
 }
 
 export interface Metric {
