@@ -16,6 +16,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from app.agent import judge
+
 _SNAP_DIR = Path(__file__).resolve().parent / "snapshots"
 _TAG = re.compile(r"<[^>]+>")
 _WS = re.compile(r"\s+")
@@ -95,6 +97,15 @@ def _eval_check(check: dict, ctx: dict) -> bool:
     return False
 
 
+def _semantic_verdict(assertion: str, check: dict, ctx: dict, fixture: dict) -> bool:
+    """Semantic checks use a real LLM judge (M5b); fall back to the deterministic
+    state proxy when no key is set or the model gives an unusable answer."""
+    verdict = judge(assertion, {"task": fixture.get("task", {}).get("prompt", ""), "final_state": ctx["state"]})
+    if verdict is not None:
+        return verdict
+    return _eval_check(check, ctx)
+
+
 def evaluate(verifiers: list[dict], fixture: dict, corrected: bool, overrides: set[str]) -> dict:
     """Return {results: {id: 'pass'|'fail'}, reward: 0|1, executed: int, overridden: int}."""
     state_key = "corrected" if corrected else "original"
@@ -120,7 +131,10 @@ def evaluate(verifiers: list[dict], fixture: dict, corrected: bool, overrides: s
             results[vid] = "fail"  # unexecutable (e.g. free-text human check) → attest via override
             continue
         executed += 1
-        results[vid] = "pass" if _eval_check(check, ctx) else "fail"
+        if v.get("level") == "semantic":  # LLM-judge level (M5b), deterministic fallback
+            results[vid] = "pass" if _semantic_verdict(v.get("assertion", ""), check, ctx, fixture) else "fail"
+        else:
+            results[vid] = "pass" if _eval_check(check, ctx) else "fail"
     reward = 1 if verifiers and all(r == "pass" for r in results.values()) else 0
     return {
         "results": results,

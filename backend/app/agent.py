@@ -22,6 +22,49 @@ _ANTHROPIC_VERSION = "2023-06-01"
 _MAX_STEPS = 5
 
 
+def _call_claude(prompt: str, max_tokens: int = 700) -> str | None:
+    """Single Anthropic Messages call. Returns the text, or None on any failure
+    (no key, network, bad response) so callers can fall back."""
+    key = settings.anthropic_api_key.strip()
+    if not key:
+        return None
+    body = json.dumps(
+        {"model": settings.agent_model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}]}
+    ).encode()
+    req = urllib.request.Request(
+        _API,
+        data=body,
+        headers={"x-api-key": key, "anthropic-version": _ANTHROPIC_VERSION, "content-type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            data = json.loads(resp.read())
+    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
+        return None
+    return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+
+
+def judge(assertion: str, context: dict) -> bool | None:
+    """Real LLM judge (M5b) for Semantic verifiers. Returns True/False, or None
+    to fall back to the deterministic proxy (no key / unparseable answer)."""
+    prompt = (
+        "You are a strict trajectory verifier. Given the CONTEXT (a task and the "
+        "final recorded state), decide whether the CLAIM is satisfied.\n\n"
+        f"CONTEXT:\n{json.dumps(context, indent=2, default=str)}\n\n"
+        f"CLAIM: {assertion}\n\n"
+        "Answer with exactly one word: YES if the claim holds, otherwise NO."
+    )
+    text = _call_claude(prompt, max_tokens=8)
+    if text is None:
+        return None
+    t = text.strip().upper()
+    if t.startswith("YES"):
+        return True
+    if t.startswith("NO"):
+        return False
+    return None
+
+
 def _extract_json_array(text: str) -> list:
     text = text.strip()
     if text.startswith("```"):
@@ -47,8 +90,7 @@ def _tab_snapshot(tab_id: str, fixture: dict) -> str | None:
 
 def generate_branch(fixture: dict, from_step: int, correction: str) -> list[dict] | None:
     """Return the model-generated continuation steps, or None to fall back."""
-    key = settings.anthropic_api_key.strip()
-    if not key:
+    if not settings.anthropic_api_key.strip():
         return None
 
     task = fixture["task"]
@@ -70,21 +112,9 @@ def generate_branch(fixture: dict, from_step: int, correction: str) -> list[dict
         "Return ONLY the JSON array, no prose."
     )
 
-    body = json.dumps(
-        {"model": settings.agent_model, "max_tokens": 700, "messages": [{"role": "user", "content": prompt}]}
-    ).encode()
-    req = urllib.request.Request(
-        _API,
-        data=body,
-        headers={"x-api-key": key, "anthropic-version": _ANTHROPIC_VERSION, "content-type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=45) as resp:
-            data = json.loads(resp.read())
-    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
+    text = _call_claude(prompt, max_tokens=700)
+    if text is None:
         return None
-
-    text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
     arr = _extract_json_array(text)
     steps: list[dict] = []
     for i, a in enumerate(arr[:_MAX_STEPS]):
