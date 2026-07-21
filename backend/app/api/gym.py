@@ -1,14 +1,14 @@
 """Live gym endpoints (M6c/M8) — verify against the real world, and load real
 gym tasks into the review UI (persisting the run as a full DB record, M9)."""
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import gym_client, gym_review, models
+from app import gym_client, gym_review, jobs, models
 from app.config import settings
-from app.db import get_db
+from app.db import SessionLocal
 
 router = APIRouter(prefix="/api/gym", tags=["gym"])
 
@@ -132,26 +132,43 @@ class RunReviewBody(BaseModel):
     seed: int = 0
 
 
-@router.post("/tasks/{task_id:path}/run-review")
-def gym_run_review(task_id: str, body: RunReviewBody, db: Session = Depends(get_db)) -> dict:
-    """M8/M9 — run a real agent on a gym task, persist the run as a full DB
+def _run_review_job(task_id: str, agent: str, seed: int) -> dict:
+    """The slow work: run a real agent on a gym task, persist it as a full DB
     record (task + seed state → session → trajectory + milestones), and return
-    the review payload for the UI."""
-    r = gym_client.run_agent(task_id, body.agent, body.seed)
+    the review payload. Runs on a background thread (opens its own DB session)."""
+    r = gym_client.run_agent(task_id, agent, seed)
     if r is None:
-        raise HTTPException(status_code=502, detail="gym unreachable or run failed")
+        raise jobs.JobFailure("gym unreachable or run failed")
     if not (r.get("trajectory") or {}).get("steps"):
-        raise HTTPException(status_code=422, detail="run produced no trajectory (task may lack an oracle solver)")
-    review = gym_review.to_review(r, task_id, body.agent)
+        raise jobs.JobFailure("run produced no trajectory (task may lack an oracle solver)")
+    review = gym_review.to_review(r, task_id, agent)
     review["backendState"] = gym_client.state()  # the REAL post-run world (cart/orders/returns/account)
-    try:
-        review["sessionId"] = _persist_gym_review(db, task_id, body.agent, r, review)
-        review["persisted"] = True
-    except Exception as exc:  # noqa: BLE001 — the review still loads, but say so honestly
-        db.rollback()
-        review["persisted"] = False
-        review["persistError"] = type(exc).__name__
+    with SessionLocal() as db:
+        try:
+            review["sessionId"] = _persist_gym_review(db, task_id, agent, r, review)
+            review["persisted"] = True
+        except Exception as exc:  # noqa: BLE001 — the review still loads, but say so honestly
+            db.rollback()
+            review["persisted"] = False
+            review["persistError"] = type(exc).__name__
     return review
+
+
+@router.post("/tasks/{task_id:path}/run-review")
+def gym_run_review(task_id: str, body: RunReviewBody) -> dict:
+    """M8/M9 — enqueue a real agent run + persist as a background job; returns a
+    jobId to poll. The browser-driving run is slow (up to 260s), so it runs OFF
+    the request path so a proxy/read timeout can't drop a finished review."""
+    job = jobs.store.submit("run-review", _run_review_job, task_id, body.agent, body.seed)
+    return {"jobId": job.id, "status": job.status}
+
+
+@router.get("/jobs/{job_id}")
+def gym_job(job_id: str) -> dict:
+    job = jobs.store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="unknown or expired job")
+    return job.public()
 
 
 @router.get("/screenshot")

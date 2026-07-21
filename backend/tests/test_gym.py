@@ -29,3 +29,53 @@ def test_verify_502_when_gym_down(client, monkeypatch):
 def test_run_502_when_gym_down(client, monkeypatch):
     monkeypatch.setattr("app.gym_client.settings.gym_url", _DOWN)
     assert client.post("/api/gym/run", json={"taskId": "A1/x"}).status_code == 502
+
+
+# ---- async run-review job queue ----
+
+
+def _poll(client, jid, tries=80):
+    import time
+
+    jr = {"status": "queued"}
+    for _ in range(tries):
+        jr = client.get(f"/api/gym/jobs/{jid}").json()
+        if jr["status"] in ("done", "error"):
+            break
+        time.sleep(0.05)
+    return jr
+
+
+def test_run_review_is_async_and_pollable(client, monkeypatch):
+    # gym returns nothing → the worker fails → job reaches a terminal 'error'.
+    monkeypatch.setattr("app.gym_client.run_agent", lambda *a, **k: None)
+    r = client.post("/api/gym/tasks/A1/x/run-review", json={"agent": "oracle", "seed": 0})
+    assert r.status_code == 200
+    assert r.json().get("jobId")  # returns a jobId immediately (run is off the request path)
+    jr = _poll(client, r.json()["jobId"])
+    assert jr["status"] == "error"
+    assert client.get("/api/gym/jobs/does-not-exist").status_code == 404
+
+
+def test_job_store_runs_and_captures_outcomes():
+    import time
+
+    from app.jobs import JobFailure, JobStore
+
+    st = JobStore()
+    ok = st.submit("t", lambda x: x + 1, 41)
+    for _ in range(80):
+        if st.get(ok.id).status == "done":
+            break
+        time.sleep(0.02)
+    assert st.get(ok.id).status == "done" and st.get(ok.id).result == 42
+
+    def _boom():
+        raise JobFailure("boom")
+
+    bad = st.submit("t", _boom)
+    for _ in range(80):
+        if st.get(bad.id).status == "error":
+            break
+        time.sleep(0.02)
+    assert st.get(bad.id).status == "error" and st.get(bad.id).error == "boom"

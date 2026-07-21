@@ -190,17 +190,53 @@ export async function fetchGymTasks(): Promise<GymTaskItem[] | null> {
   }
 }
 
-/** Run a real agent on a gym task and load it as a review (slow — real browser run). */
-export async function runGymReview(taskId: string, agent = "oracle", seed = 0): Promise<ReviewData | null> {
+export interface GymJob {
+  jobId: string;
+  status: "queued" | "running" | "done" | "error";
+  review?: ReviewPayload;
+  error?: string;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Enqueue a real gym run; returns the jobId to poll, or null if unreachable. */
+export async function startGymReview(taskId: string, agent = "oracle", seed = 0): Promise<string | null> {
+  const out = await post<{ jobId: string }>(`/api/gym/tasks/${taskId}/run-review`, { agent, seed });
+  return out?.jobId ?? null;
+}
+
+/** One poll of a gym job. */
+export async function pollGymJob(jobId: string): Promise<GymJob | null> {
   try {
-    const res = await fetch(`/api/gym/tasks/${taskId}/run-review`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agent, seed }),
-    });
+    const res = await fetch(`/api/gym/jobs/${encodeURIComponent(jobId)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return mapPayload((await res.json()) as ReviewPayload);
+    return (await res.json()) as GymJob;
   } catch {
     return null;
   }
+}
+
+/** Start a real gym run and poll to completion (the run is now OFF the request
+ *  path, so a slow browser run can't time out the POST). onStatus fires on each
+ *  phase change for the loading UI. */
+export async function runGymReview(
+  taskId: string,
+  agent = "oracle",
+  seed = 0,
+  opts?: { onStatus?: (s: GymJob["status"]) => void; intervalMs?: number; timeoutMs?: number },
+): Promise<ReviewData | null> {
+  const jobId = await startGymReview(taskId, agent, seed);
+  if (!jobId) return null;
+  const interval = opts?.intervalMs ?? 1500;
+  const deadline = Date.now() + (opts?.timeoutMs ?? 300_000);
+  let last: GymJob["status"] | null = null;
+  while (Date.now() < deadline) {
+    await sleep(interval);
+    const j = await pollGymJob(jobId);
+    if (!j) continue; // transient blip — keep polling
+    if (j.status !== last) { last = j.status; opts?.onStatus?.(j.status); }
+    if (j.status === "done") return j.review ? mapPayload(j.review) : null;
+    if (j.status === "error") return null;
+  }
+  return null; // client-side timeout guard
 }

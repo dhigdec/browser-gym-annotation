@@ -340,11 +340,12 @@ function GymPicker({ onClose, onPick }: { onClose: () => void; onPick: (id: stri
   );
 }
 
-function GymLoading({ taskId }: { taskId: string }) {
+function GymLoading({ taskId, phase }: { taskId: string; phase: "queued" | "running" | "done" | "error" }) {
+  const heading = phase === "queued" ? "Queued — waiting for the gym…" : "Running the agent in the gym…";
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(13,13,13,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }}>
       <div style={{ width: 420, background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, padding: 26, textAlign: "center" }}>
-        <div style={{ fontSize: "1rem", fontWeight: weight.bold, color: t.n0 }}>Running the agent in the gym…</div>
+        <div style={{ fontSize: "1rem", fontWeight: weight.bold, color: t.n0 }}>{heading}</div>
         <div style={{ marginTop: 8, fontSize: "0.84rem", color: t.n2, lineHeight: 1.5 }}>Driving a real browser through <span style={{ fontFamily: t.fontMono, fontSize: "0.78rem" }}>{taskId}</span> and scoring it with the real milestone verifiers. This takes a few seconds.</div>
         <div style={{ marginTop: 16, height: 4, background: t.n7, borderRadius: 3, overflow: "hidden" }}>
           <div style={{ height: "100%", width: "40%", background: t.primary6, borderRadius: 3, animation: "gymbar 1.1s ease-in-out infinite" }} />
@@ -361,6 +362,7 @@ export function TaskReview() {
   const [data, setData] = useState<ReviewData | null>(null);
   const [gymData, setGymData] = useState<ReviewData | null>(null);
   const [gymLoading, setGymLoading] = useState<string | null>(null);
+  const [gymPhase, setGymPhase] = useState<"queued" | "running" | "done" | "error">("queued");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [gymError, setGymError] = useState<string | null>(null);
   const [freshNonce, setFreshNonce] = useState(0); // >0 forces a new session on remount ("New annotation")
@@ -389,8 +391,9 @@ export function TaskReview() {
   const loadGym = async (id: string) => {
     setPickerOpen(false);
     setGymError(null);
+    setGymPhase("queued");
     setGymLoading(id);
-    const rv = await runGymReview(id);
+    const rv = await runGymReview(id, "oracle", 0, { onStatus: setGymPhase });
     setGymLoading(null);
     if (rv) setGymData(rv);
     else setGymError(id);
@@ -423,7 +426,7 @@ export function TaskReview() {
         <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: t.n3, fontFamily: t.fontPrimary }}>Loading task…</div>
       )}
       {pickerOpen && <GymPicker onClose={() => setPickerOpen(false)} onPick={loadGym} />}
-      {gymLoading && <GymLoading taskId={gymLoading} />}
+      {gymLoading && <GymLoading taskId={gymLoading} phase={gymPhase} />}
       {gymError && (
         <div onClick={() => setGymError(null)} style={{ position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", background: t.redLite, color: t.redDark, border: `1px solid color-mix(in srgb, ${t.red} 42%, ${t.n9})`, padding: "10px 16px", borderRadius: t.radiusLg, fontSize: "0.84rem", fontWeight: weight.semibold, zIndex: 70, cursor: "pointer", fontFamily: t.fontPrimary }}>
           Couldn't run <span style={{ fontFamily: t.fontMono }}>{gymError}</span> — the gym may be down or the task has no oracle solver. Tap to dismiss.
