@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from app.agent import judge
+from app.agent import judge, judge_trajectory
 
 _SNAP_DIR = Path(__file__).resolve().parent / "snapshots"
 _TAG = re.compile(r"<[^>]+>")
@@ -106,6 +106,17 @@ def _semantic_verdict(assertion: str, check: dict, ctx: dict, fixture: dict) -> 
     return _eval_check(check, ctx)
 
 
+def _policy_verdict(check: dict, ctx: dict) -> bool:
+    """Trajectory-policy checks (JP's design): an LLM audits a negative constraint
+    over the whole trace. Falls back to the check's deterministic `fallback` when
+    no key is set / the model is unusable."""
+    verdict = judge_trajectory(check.get("policy", ""), ctx["trace"])
+    if verdict is not None:
+        return verdict
+    fb = check.get("fallback")
+    return _eval_check(fb, ctx) if isinstance(fb, dict) else False
+
+
 def evaluate(verifiers: list[dict], fixture: dict, corrected: bool, overrides: set[str]) -> dict:
     """Return {results: {id: 'pass'|'fail'}, reward: 0|1, executed: int, overridden: int}."""
     state_key = "corrected" if corrected else "original"
@@ -131,7 +142,9 @@ def evaluate(verifiers: list[dict], fixture: dict, corrected: bool, overrides: s
             results[vid] = "fail"  # unexecutable (e.g. free-text human check) → attest via override
             continue
         executed += 1
-        if v.get("level") == "semantic":  # LLM-judge level (M5b), deterministic fallback
+        if check.get("kind") == "trace_policy":  # LLM trajectory-policy verifier (JP)
+            results[vid] = "pass" if _policy_verdict(check, ctx) else "fail"
+        elif v.get("level") == "semantic":  # LLM-judge level (M5b), deterministic fallback
             results[vid] = "pass" if _semantic_verdict(v.get("assertion", ""), check, ctx, fixture) else "fail"
         else:
             results[vid] = "pass" if _eval_check(check, ctx) else "fail"
