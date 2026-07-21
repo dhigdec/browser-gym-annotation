@@ -250,11 +250,11 @@ def _autogen_verifiers_job(task_id: str, seed: int, iterations: int) -> dict:
     on golden), and iterate with feedback until it passes or the budget runs out."""
     if gym_client.reset(task_id, seed) is None:
         raise jobs.JobFailure("gym unreachable or unknown task")
-    initial = (gym_client.world() or {}).get("shop", {})
+    initial = gym_client.world() or {}  # full multi-app world (paths are world-rooted)
     run = gym_client.run_agent(task_id, "oracle", seed)
     if run is None:
         raise jobs.JobFailure("oracle run failed (task may lack an oracle solver)")
-    golden = (gym_client.world() or {}).get("shop", {})
+    golden = gym_client.world() or {}
     brief = (run.get("trajectory") or {}).get("task_brief") or task_id
 
     feedback: str | None = None

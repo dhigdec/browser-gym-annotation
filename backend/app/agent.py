@@ -121,23 +121,34 @@ def _tab_snapshot(tab_id: str, fixture: dict) -> str | None:
     return None
 
 
-# The exact dot-paths the reward agent may assert over, and whether each is a
-# COUNT (dict/list → use len checks) or a scalar VALUE.
-_COUNT_PATHS = ["orders", "cart.items", "returns", "subscriptions"]
-_VALUE_PATHS = ["current_user_id", "cart.applied_promo"]
+# The exact dot-paths the reward agent may assert over, rooted at the multi-app
+# world, and whether each is a COUNT (dict/list → len checks) or a scalar VALUE.
+_COUNT_PATHS = ["shop.orders", "shop.cart.items", "shop.returns", "shop.subscriptions",
+                "mail.sent", "calendar.events", "market.orders", "events"]
+_VALUE_PATHS = ["shop.current_user_id", "shop.cart.applied_promo"]
 
 
-def _paths_view(shop: dict) -> dict:
+def _paths_view(world: dict) -> dict:
     """Show each assertable path's REAL value in this world (counts for
-    collections, the value for scalars) so the reward agent targets real paths."""
+    collections, the value for scalars) so the reward agent targets real paths.
+    Rooted at the full multi-app world (shop + mail/calendar/market + the
+    cross-app event log) so multi-app tasks have assertable signal."""
+    shop = world.get("shop", {}) or {}
     cart = shop.get("cart", {}) or {}
+    mail = world.get("mail", {}) or {}
+    cal = world.get("calendar", {}) or {}
+    market = world.get("market", {}) or {}
     return {
-        "orders": len(shop.get("orders", {}) or {}),
-        "cart.items": len(cart.get("items", []) or []),
-        "returns": len(shop.get("returns", {}) or {}),
-        "subscriptions": len(shop.get("subscriptions", {}) or {}),
-        "current_user_id": shop.get("current_user_id"),
-        "cart.applied_promo": cart.get("applied_promo"),
+        "shop.orders": len(shop.get("orders", {}) or {}),
+        "shop.cart.items": len(cart.get("items", []) or []),
+        "shop.returns": len(shop.get("returns", {}) or {}),
+        "shop.subscriptions": len(shop.get("subscriptions", {}) or {}),
+        "shop.current_user_id": shop.get("current_user_id"),
+        "shop.cart.applied_promo": cart.get("applied_promo"),
+        "mail.sent": len(mail.get("sent", {}) or {}),
+        "calendar.events": len(cal.get("events", {}) or {}),
+        "market.orders": len(market.get("orders", {}) or {}),
+        "events": len(world.get("events", []) or []),
     }
 
 
