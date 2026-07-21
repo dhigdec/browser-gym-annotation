@@ -44,6 +44,17 @@ import { VerifierSuite } from "./components/VerifierSuite";
 
 const TASK_ID = "GYM-2041";
 
+/** Close a modal on Escape + move focus into it on open (a11y). */
+function useModalA11y(onClose: () => void, ref: { current: HTMLDivElement | null }) {
+  useEffect(() => {
+    ref.current?.focus();
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose, ref]);
+}
+const DIALOG = { role: "dialog", "aria-modal": true, tabIndex: -1 } as const;
+
 function SectionHeader({ n, title, subtitle, done, right }: { n: number; title: string; subtitle: string; done?: boolean; right?: ReactNode }) {
   const active = n === 1 || done;
   return (
@@ -383,6 +394,8 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
 }
 
 function StateEditor({ world, onClose, onApply }: { world: Record<string, unknown>; onClose: () => void; onApply: (edits: Record<string, unknown>) => Promise<void> }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalA11y(onClose, dialogRef);
   const shop = ((world?.shop ?? {}) as Record<string, unknown>);
   const cart = ((shop.cart ?? {}) as Record<string, unknown>);
   const nOrders = Object.keys((shop.orders ?? {}) as object).length;
@@ -418,7 +431,7 @@ function StateEditor({ world, onClose, onApply }: { world: Record<string, unknow
   );
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(13,13,13,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 56 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 520, background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div ref={dialogRef} {...DIALOG} aria-label="Edit the corrected state" onClick={(e) => e.stopPropagation()} style={{ width: 520, background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, display: "flex", flexDirection: "column", overflow: "hidden", outline: "none" }}>
         <div style={{ padding: "18px 22px 14px", borderBottom: `1px solid ${t.n7}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <div style={{ fontSize: "1rem", fontWeight: weight.bold, color: t.n0 }}>✎ Edit the corrected state</div>
@@ -454,10 +467,12 @@ function StateEditor({ world, onClose, onApply }: { world: Record<string, unknow
 }
 
 function AutogenPanel({ result, onClose }: { result: AutogenResult; onClose: () => void }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalA11y(onClose, dialogRef);
   const ok = result.oracle;
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(13,13,13,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 55 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 660, maxHeight: "80vh", background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div ref={dialogRef} {...DIALOG} aria-label="Generated verifier suite" onClick={(e) => e.stopPropagation()} style={{ width: 660, maxHeight: "80vh", background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, display: "flex", flexDirection: "column", overflow: "hidden", outline: "none" }}>
         <div style={{ padding: "18px 20px 14px", borderBottom: `1px solid ${t.n7}` }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span style={{ fontSize: "1rem", fontWeight: weight.bold, color: t.n0 }}>🤖 Reward agent — generated verifier suite</span>
@@ -493,6 +508,8 @@ function AutogenPanel({ result, onClose }: { result: AutogenResult; onClose: () 
 }
 
 function QaPanel({ onClose, reviewer }: { onClose: () => void; reviewer: string }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalA11y(onClose, dialogRef);
   const [tasks, setTasks] = useState<QaTaskRow[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [subs, setSubs] = useState<QaSubmission[] | null>(null);
@@ -515,7 +532,7 @@ function QaPanel({ onClose, reviewer }: { onClose: () => void; reviewer: string 
   };
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(13,13,13,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 55 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 840, height: "78vh", background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div ref={dialogRef} {...DIALOG} aria-label="Multi-annotator QA" onClick={(e) => e.stopPropagation()} style={{ width: 840, height: "78vh", background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, display: "flex", flexDirection: "column", overflow: "hidden", outline: "none" }}>
         <div style={{ padding: "18px 22px 14px", borderBottom: `1px solid ${t.n7}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div>
             <div style={{ fontSize: "1rem", fontWeight: weight.bold, color: t.n0 }}>⚖ Multi-annotator QA</div>
@@ -574,6 +591,8 @@ function QaPanel({ onClose, reviewer }: { onClose: () => void; reviewer: string 
 }
 
 function GymPicker({ onClose, onPick }: { onClose: () => void; onPick: (id: string) => void }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalA11y(onClose, dialogRef);
   const [all, setAll] = useState<string[] | null>(null);
   const [connected, setConnected] = useState<boolean | null>(null);
   const [q, setQ] = useState("");
@@ -587,7 +606,7 @@ function GymPicker({ onClose, onPick }: { onClose: () => void; onPick: (id: stri
   const list = (all ?? []).filter((id) => id.toLowerCase().includes(q.toLowerCase())).slice(0, 200);
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(13,13,13,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 620, maxHeight: "76vh", background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div ref={dialogRef} {...DIALOG} aria-label="Load a gym task" onClick={(e) => e.stopPropagation()} style={{ width: 620, maxHeight: "76vh", background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, display: "flex", flexDirection: "column", overflow: "hidden", outline: "none" }}>
         <div style={{ padding: "18px 20px 12px", borderBottom: `1px solid ${t.n7}` }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span style={{ fontSize: "1rem", fontWeight: weight.bold, color: t.n0 }}>Load a real gym task</span>

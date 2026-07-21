@@ -225,7 +225,7 @@ def gym_resume(body: ResumeBody) -> dict:
 def _resume_run_job(task_id: str, seed: int, state: dict, url: str, step, agent: str) -> dict:
     r = gym_client.resume_run(task_id, seed, state, url, step, agent)
     if r is None:
-        raise jobs.JobFailure("gym unreachable or resume-run failed")
+        raise jobs.JobFailure("gym unreachable, task not found, or resume-run failed")
     if not (r.get("trajectory") or {}).get("steps"):
         raise jobs.JobFailure("resume run produced no trajectory (agent may need an API key)")
     review = gym_review.to_review(r, task_id, agent)
@@ -233,6 +233,15 @@ def _resume_run_job(task_id: str, seed: int, state: dict, url: str, step, agent:
     review.setdefault("gymResume", {})["worldState"] = gym_client.world()
     vr = (r.get("trajectory") or {}).get("verifier_result") or {}
     review["gymReward"] = 1 if vr.get("success") else 0  # the driven-forward verdict
+    # Persist the driven-forward run as a real record too (symmetry with run-review).
+    with SessionLocal() as db:
+        try:
+            review["sessionId"] = _persist_gym_review(db, task_id, agent, r, review)
+            review["persisted"] = True
+        except Exception as exc:  # noqa: BLE001 — the review still loads
+            db.rollback()
+            review["persisted"] = False
+            review["persistError"] = type(exc).__name__
     return review
 
 

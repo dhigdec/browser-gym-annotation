@@ -1,8 +1,9 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app import models  # noqa: F401 — register ORM models on Base
@@ -13,6 +14,7 @@ from app.api.sessions import router as sessions_router
 from app.api.tasks import router as tasks_router
 from app.config import settings
 from app.db import Base, engine
+from app.gym_client import GymTaskNotFound
 
 log = logging.getLogger("annotator")
 
@@ -53,6 +55,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(GymTaskNotFound)
+async def _gym_task_not_found(_: Request, exc: GymTaskNotFound) -> JSONResponse:
+    # Distinguish "unknown gym task" (404) from an unreachable gym (502).
+    return JSONResponse(status_code=404, content={"detail": "gym task not found"})
 
 
 @app.get("/health")

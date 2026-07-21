@@ -15,6 +15,10 @@ import urllib.request
 from app.config import settings
 
 
+class GymTaskNotFound(Exception):
+    """The gym responded 404 — the task_id is unknown (distinct from unreachable)."""
+
+
 def _req(method: str, path: str, body: dict | None = None, timeout: int = 20) -> dict | None:
     url = settings.gym_url.rstrip("/") + path
     data = json.dumps(body).encode() if body is not None else None
@@ -27,6 +31,10 @@ def _req(method: str, path: str, body: dict | None = None, timeout: int = 20) ->
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
+    except urllib.error.HTTPError as e:  # a real HTTP response — distinguish 404 from a dead gym
+        if e.code == 404:
+            raise GymTaskNotFound(path) from e
+        return None
     except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
         return None
 
