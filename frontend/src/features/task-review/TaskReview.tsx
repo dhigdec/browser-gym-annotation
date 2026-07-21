@@ -1,8 +1,24 @@
-import { useEffect, useReducer, useState, type ReactNode } from "react";
+import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { Button, t, weight } from "../../ds";
-import { fetchReview } from "../../lib/api";
+import {
+  fetchReview,
+  openSession,
+  patchSession,
+  recordBenchmark,
+  saveSuite,
+  submitSession,
+} from "../../lib/api";
 import type { ReviewData, Verifier } from "../../lib/types";
-import { makeInitialState, reducer, runSummary, visibleSteps } from "../../lib/reviewMachine";
+import {
+  benchmarkResults,
+  makeInitialState,
+  reducer,
+  reward,
+  runSummary,
+  sessionStatus,
+  verifierPayloads,
+  visibleSteps,
+} from "../../lib/reviewMachine";
 import { Header } from "./components/Header";
 import { ReplayPane } from "./components/ReplayPane";
 import { Scrubber } from "./components/Scrubber";
@@ -12,14 +28,32 @@ import { VerifierSuite } from "./components/VerifierSuite";
 
 const TASK_ID = "GYM-2041";
 
-function SectionHeader({ n, title, subtitle, done }: { n: number; title: string; subtitle: string; done?: boolean }) {
+function SectionHeader({ n, title, subtitle, done, right }: { n: number; title: string; subtitle: string; done?: boolean; right?: ReactNode }) {
   const active = n === 1 || done;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "2px 4px 12px" }}>
       <span style={{ width: 22, height: 22, borderRadius: t.radiusFull, background: n === 1 ? t.primary6 : done ? t.green : t.n4, color: t.n9, display: "inline-flex", alignItems: "center", justifyContent: "center", fontFamily: t.fontMono, fontSize: "0.75rem", fontWeight: weight.bold }}>{n}</span>
       <span style={{ fontSize: "0.875rem", fontWeight: weight.bold, color: active ? t.n0 : t.n2 }}>{title}</span>
       <span style={{ fontSize: "0.78rem", color: t.n3 }}>{subtitle}</span>
+      {right && <span style={{ marginLeft: "auto" }}>{right}</span>}
     </div>
+  );
+}
+
+const STATUS_LABEL: Record<string, string> = {
+  draft: "Draft", steps_approved: "Steps approved", verifiers_generated: "Suite saved",
+  benchmark_run: "Benchmarked", submitted: "Submitted",
+};
+
+function SaveBadge({ sessionId, status }: { sessionId: string | null; status: string }) {
+  const saved = !!sessionId;
+  const color = saved ? t.green : t.n3;
+  return (
+    <span title={saved ? "Your work autosaves to the platform database" : "Backend offline — changes are not being saved"}
+      style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: "0.72rem", fontWeight: weight.semibold, color: t.n2 }}>
+      <span style={{ width: 7, height: 7, borderRadius: t.radiusFull, background: color, boxShadow: saved ? `0 0 0 3px ${t.greenLite}` : "none" }} />
+      {saved ? `Autosaved · ${STATUS_LABEL[status] ?? status}` : "Not saved (offline)"}
+    </span>
   );
 }
 
@@ -52,12 +86,102 @@ function Frame({ children }: { children: ReactNode }) {
 function ReviewScreen({ data }: { data: ReviewData }) {
   const [state, dispatch] = useReducer(reducer, data, makeInitialState);
   const [correcting, setCorrecting] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!state.playing) return;
     const id = setInterval(() => dispatch({ t: "tick" }), 1100);
     return () => clearInterval(id);
   }, [state.playing]);
+
+  // ---- M4 persistence: open/resume the session, then mirror each committed
+  // transition to the backend so the annotator's work survives a refresh.
+  const statusRef = useRef<string>("draft");
+  const suiteSigRef = useRef<string>("");
+  const benchPostedRef = useRef(false);
+  const submittedRef = useRef(false);
+  const rerunRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    openSession(data.task.id).then((snap) => {
+      if (!alive || !snap) return;
+      setSessionId(snap.sessionId);
+      // Seed the sync refs to the restored state so we don't echo it back.
+      statusRef.current = snap.status;
+      rerunRef.current = snap.rerunFrom;
+      benchPostedRef.current = snap.status === "benchmark_run" || snap.status === "submitted";
+      submittedRef.current = snap.status === "submitted";
+      const restored = reducer(makeInitialState(data), {
+        t: "hydrate",
+        status: snap.status,
+        rerunFrom: snap.rerunFrom,
+      });
+      suiteSigRef.current = restored.verifiersGenerated
+        ? JSON.stringify(verifierPayloads(restored))
+        : "";
+      if (snap.status !== "draft" || snap.rerunFrom != null) {
+        dispatch({ t: "hydrate", status: snap.status, rerunFrom: snap.rerunFrom });
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, [data.task.id]);
+
+  // Gate-status transitions (draft → steps_approved → verifiers_generated).
+  const status = sessionStatus(state);
+  useEffect(() => {
+    if (!sessionId || status === statusRef.current) return;
+    statusRef.current = status;
+    if (status === "steps_approved" || status === "verifiers_generated") {
+      void patchSession(sessionId, { status });
+    }
+  }, [sessionId, status]);
+
+  // Correction fork — persist the re-run point.
+  useEffect(() => {
+    if (!sessionId || state.rerunFrom === rerunRef.current) return;
+    rerunRef.current = state.rerunFrom;
+    if (state.rerunFrom != null) {
+      void patchSession(sessionId, { rerunFrom: state.rerunFrom, status: "steps_approved" });
+    }
+  }, [sessionId, state.rerunFrom]);
+
+  // Verifier suite — save a new immutable version whenever it changes.
+  const suiteSig = state.verifiersGenerated ? JSON.stringify(verifierPayloads(state)) : "";
+  useEffect(() => {
+    if (!sessionId || !suiteSig || suiteSig === suiteSigRef.current) return;
+    suiteSigRef.current = suiteSig;
+    void saveSuite(sessionId, verifierPayloads(state));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, suiteSig]);
+
+  // Benchmark — record one run on each false→true edge (each re-run).
+  useEffect(() => {
+    if (!sessionId) return;
+    if (state.benchmarkRun && !benchPostedRef.current) {
+      benchPostedRef.current = true;
+      void recordBenchmark(sessionId, reward(state) ?? 0, benchmarkResults(state));
+    } else if (!state.benchmarkRun) {
+      benchPostedRef.current = false;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, state.benchmarkRun]);
+
+  // Submission — write the dataset row once.
+  useEffect(() => {
+    if (!sessionId) return;
+    if (state.submitted && !submittedRef.current) {
+      submittedRef.current = true;
+      void submitSession(sessionId, {
+        reward: reward(state) ?? 0,
+        override: Object.keys(state.overrides).length > 0,
+        kind: reward(state) === 1 ? "golden" : "breaker",
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, state.submitted]);
 
   const steps = visibleSteps(state);
   const current = steps[state.step];
@@ -73,7 +197,7 @@ function ReviewScreen({ data }: { data: ReviewData }) {
     <Frame>
       <Header />
       <div style={{ padding: "16px 16px 8px" }}>
-        <SectionHeader n={1} title="Review & correct the agent run" subtitle="Verify each step; correct any step to re-run the agent from that state." />
+        <SectionHeader n={1} title="Review & correct the agent run" subtitle="Verify each step; correct any step to re-run the agent from that state." right={<SaveBadge sessionId={sessionId} status={status} />} />
         <div style={{ display: "flex", gap: 16, height: 632 }}>
           <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
             <ReplayPane

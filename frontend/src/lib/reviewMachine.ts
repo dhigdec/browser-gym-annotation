@@ -49,7 +49,15 @@ export type Action =
   | { t: "removeVerifier"; id: string }
   | { t: "editVerifier"; id: string; assertion: string; code: string }
   | { t: "override"; id: string }
-  | { t: "submit" };
+  | { t: "submit" }
+  | { t: "hydrate"; status: PersistStatus; rerunFrom: number | null };
+
+export type PersistStatus =
+  | "draft"
+  | "steps_approved"
+  | "verifiers_generated"
+  | "benchmark_run"
+  | "submitted";
 
 export function reducer(s: ReviewState, a: Action): ReviewState {
   const steps = visibleSteps(s);
@@ -99,6 +107,25 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
       return { ...s, overrides: { ...s.overrides, [a.id]: true }, submitted: false };
     case "submit":
       return canSubmit(s) ? { ...s, submitted: true } : s;
+    case "hydrate": {
+      // Restore the gate chain + correction fork from a persisted session so
+      // the annotator's progress survives a refresh.
+      const base = { ...s, rerunFrom: a.rerunFrom };
+      const vs = visibleSteps(base);
+      const last = Math.max(0, vs.length - 1);
+      const approved = a.status !== "draft";
+      const step = a.rerunFrom != null ? errorIndex(base.data.steps) : s.step;
+      return {
+        ...base,
+        stepsApproved: approved,
+        verifiersGenerated: ["verifiers_generated", "benchmark_run", "submitted"].includes(a.status),
+        benchmarkRun: ["benchmark_run", "submitted"].includes(a.status),
+        submitted: a.status === "submitted",
+        verifiedThrough: approved ? vs.length : s.verifiedThrough,
+        step: Math.min(step, last),
+        activeTabId: vs[Math.min(step, last)]?.tabId ?? s.activeTabId,
+      };
+    }
     default:
       return s;
   }
@@ -153,4 +180,35 @@ export function failingCount(s: ReviewState): number {
 
 export function canSubmit(s: ReviewState): boolean {
   return s.benchmarkRun && reward(s) === 1;
+}
+
+// ---- persistence projections (M4) -----------------------------------------
+
+/** The gate-chain status persisted to the backend. */
+export function sessionStatus(s: ReviewState): PersistStatus {
+  if (s.submitted) return "submitted";
+  if (s.benchmarkRun) return "benchmark_run";
+  if (s.verifiersGenerated) return "verifiers_generated";
+  if (s.stepsApproved) return "steps_approved";
+  return "draft";
+}
+
+/** The current suite flattened for the save-suite endpoint. */
+export function verifierPayloads(s: ReviewState) {
+  return allVerifiers(s).map((v) => ({
+    id: v.id,
+    level: v.level as string,
+    assertion: v.assertion,
+    code: v.code,
+    failsUntilCorrected: !!v.failsUntilCorrected,
+    placeholder: !!v.placeholder,
+    addedByHuman: v.id.startsWith("add-"),
+  }));
+}
+
+/** Per-verifier pass/fail for the benchmark record. */
+export function benchmarkResults(s: ReviewState): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const v of allVerifiers(s)) out[v.id] = verifierState(s, v);
+  return out;
 }

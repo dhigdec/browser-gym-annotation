@@ -2,6 +2,34 @@ import { APP_COLOR } from "./appColors";
 import { reviewFixture } from "../fixtures/reviewPayload";
 import type { ReviewData, ReviewPayload } from "./types";
 
+export type SessionStatus =
+  | "draft"
+  | "steps_approved"
+  | "verifiers_generated"
+  | "benchmark_run"
+  | "submitted";
+
+export interface SessionSnapshot {
+  sessionId: string;
+  taskExternalId: string;
+  status: SessionStatus;
+  rerunFrom: number | null;
+  suite: { suiteId: string; version: number; verifiers: unknown[] } | null;
+  lastBenchmark: { reward: number; results: Record<string, unknown>; at: string } | null;
+  submission: { reward: number; kind: string; override: boolean; at: string } | null;
+}
+
+/** A persisted-verifier payload for the suite-save endpoint. */
+export interface VerifierPayload {
+  id: string;
+  level: string;
+  assertion: string;
+  code: string;
+  failsUntilCorrected: boolean;
+  placeholder: boolean;
+  addedByHuman: boolean;
+}
+
 /** Resolve app keys → colors so the render layer stays token-driven. */
 function mapPayload(p: ReviewPayload): ReviewData {
   return {
@@ -33,4 +61,65 @@ export async function fetchReview(taskId: string): Promise<LoadResult> {
   } catch {
     return { data: mapPayload(reviewFixture), source: "fallback" };
   }
+}
+
+// ---- session persistence (M4) ---------------------------------------------
+// Every call is best-effort: if the backend is down the app still runs from
+// memory (offline fixture mode), it just won't persist.
+
+async function post<T>(url: string, body: unknown): Promise<T | null> {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function send(url: string, method: "PATCH" | "PUT", body: unknown): Promise<void> {
+  try {
+    await fetch(url, {
+      method,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    /* offline — ignore */
+  }
+}
+
+/** Resume (or create) this annotator's session for a task. */
+export function openSession(taskId: string): Promise<SessionSnapshot | null> {
+  return post<SessionSnapshot>(`/api/tasks/${encodeURIComponent(taskId)}/sessions`, {});
+}
+
+export function patchSession(
+  sid: string,
+  patch: { status?: SessionStatus; rerunFrom?: number },
+): Promise<void> {
+  return send(`/api/sessions/${sid}`, "PATCH", patch);
+}
+
+export function saveSuite(sid: string, verifiers: VerifierPayload[]): Promise<void> {
+  return send(`/api/sessions/${sid}/suite`, "PUT", { verifiers });
+}
+
+export function recordBenchmark(
+  sid: string,
+  reward: number,
+  results: Record<string, string>,
+): Promise<SessionSnapshot | null> {
+  return post<SessionSnapshot>(`/api/sessions/${sid}/benchmark`, { reward, results });
+}
+
+export function submitSession(
+  sid: string,
+  body: { reward: number; override: boolean; overrideReason?: string; kind?: string },
+): Promise<SessionSnapshot | null> {
+  return post<SessionSnapshot>(`/api/sessions/${sid}/submit`, body);
 }
