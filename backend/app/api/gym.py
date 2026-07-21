@@ -1,14 +1,14 @@
 """Live gym endpoints (M6c/M8) — verify against the real world, and load real
 gym tasks into the review UI (persisting the run as a full DB record, M9)."""
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import agent, gym_client, gym_review, jobs, models, verify
 from app.config import settings
-from app.db import SessionLocal
+from app.db import SessionLocal, get_db
 
 router = APIRouter(prefix="/api/gym", tags=["gym"])
 
@@ -308,6 +308,46 @@ def _autogen_verifiers_job(task_id: str, seed: int, iterations: int) -> dict:
         "gate": gate,
         "history": history,
     }
+
+
+def _capture_seed_world(db: Session, task_id: str, seed: int) -> dict:
+    """Reset a gym task to its seed and persist the FULL initial multi-app world
+    (all tab windows: shop/mail/food/calendar/market + events) into task.seed_state,
+    so the task's start state lives in the DB — renderable/loadable without a live
+    reset. Returns a summary."""
+    reset = gym_client.reset(task_id, seed)
+    if reset is None:
+        raise HTTPException(status_code=502, detail="gym unreachable or unknown task")
+    world = gym_client.world() or {}
+    task = db.scalar(select(models.Task).where(models.Task.external_id == task_id))
+    if task is None:
+        task = models.Task(external_id=task_id, source="gym")
+        db.add(task)
+        db.flush()
+    task.source = "gym"
+    task.seed = seed
+    task.start_url = reset.get("start_path") or task.start_url or ""
+    task.seed_state = {
+        "seed": seed,
+        "initial_url": reset.get("start_path"),
+        "category": reset.get("task_category"),
+        "difficulty": reset.get("task_difficulty"),
+        "current_user_id": reset.get("current_user_id"),
+        "world": world,  # the full seed-0 multi-app world (all tab windows)
+    }
+    db.commit()
+    apps = [k for k in ("shop", "mail", "food", "calendar", "market") if world.get(k) is not None]
+    return {"taskId": task_id, "seed": seed, "persisted": True, "apps": apps, "startUrl": task.start_url}
+
+
+class CaptureSeedBody(BaseModel):
+    seed: int = 0
+
+
+@router.post("/tasks/{task_id:path}/capture-seed")
+def gym_capture_seed(task_id: str, body: CaptureSeedBody, db: Session = Depends(get_db)) -> dict:
+    """Persist a task's full seed-0 world into the DB (task.seed_state)."""
+    return _capture_seed_world(db, task_id, body.seed)
 
 
 class AutogenBody(BaseModel):
