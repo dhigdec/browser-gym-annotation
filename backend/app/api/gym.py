@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import gym_client, gym_review, jobs, models
+from app import agent, gym_client, gym_review, jobs, models, verify
 from app.config import settings
 from app.db import SessionLocal
 
@@ -241,6 +241,69 @@ class ResumeRunBody(BaseModel):
     resumeStep: int | None = None
     resumeUrl: str = "/"
     agent: str = "llm"
+
+
+def _autogen_verifiers_job(task_id: str, seed: int, iterations: int) -> dict:
+    """The autonomous ORACLE LOOP (Kashyap's reward-agent design) on our stack:
+    capture the INITIAL world (reset) and the GOLDEN world (oracle run), then have
+    the reward agent author a verifier suite, gate it (must score 0 on initial, 1
+    on golden), and iterate with feedback until it passes or the budget runs out."""
+    if gym_client.reset(task_id, seed) is None:
+        raise jobs.JobFailure("gym unreachable or unknown task")
+    initial = (gym_client.world() or {}).get("shop", {})
+    run = gym_client.run_agent(task_id, "oracle", seed)
+    if run is None:
+        raise jobs.JobFailure("oracle run failed (task may lack an oracle solver)")
+    golden = (gym_client.world() or {}).get("shop", {})
+    brief = (run.get("trajectory") or {}).get("task_brief") or task_id
+
+    feedback: str | None = None
+    history: list[dict] = []
+    suite: list[dict] | None = None
+    gate: dict | None = None
+    for it in range(max(1, iterations)):
+        suite = agent.generate_verifier_suite(brief, initial, golden, feedback)
+        if not suite:
+            history.append({"iteration": it + 1, "error": "reward agent produced no suite (needs API key)"})
+            break
+        gate = verify.evaluate_states(suite, initial, golden)
+        history.append({
+            "iteration": it + 1, "checks": len(suite),
+            "initialReward": gate["initialReward"], "goldenReward": gate["goldenReward"],
+            "oracle": gate["oracle"],
+        })
+        if gate["oracle"]:
+            break
+        fb = []
+        if gate["initialReward"] != 0:
+            fb.append("The suite scored 1 on the INITIAL (untouched) world but must score 0 — some check already holds before the task is done; tighten or add a check that only the golden world satisfies.")
+        if gate["goldenReward"] != 1:
+            fails = [k for k, r in gate["golden"]["results"].items() if r == "fail"]
+            fb.append(f"The suite scored 0 on the GOLDEN (solved) world but must score 1 — these checks wrongly failed on the solved world: {fails}. Correct their paths/values.")
+        feedback = " ".join(fb)
+    return {
+        "oracle": bool(gate and gate.get("oracle")),
+        "iterations": len(history),
+        "brief": brief,
+        "suite": suite or [],
+        "gate": gate,
+        "history": history,
+    }
+
+
+class AutogenBody(BaseModel):
+    taskId: str
+    seed: int = 0
+    iterations: int = 5
+
+
+@router.post("/autogen-verifiers")
+def gym_autogen_verifiers(body: AutogenBody) -> dict:
+    """Autonomously generate + oracle-validate a verifier suite for a gym task
+    (reward-agent loop: initial=0, golden=1, iterate). Slow (an oracle run + LLM
+    calls) — runs as a job; poll GET /api/gym/jobs/{id}."""
+    job = jobs.store.submit("autogen-verifiers", _autogen_verifiers_job, body.taskId, body.seed, body.iterations)
+    return {"jobId": job.id, "status": job.status}
 
 
 @router.post("/resume-run")

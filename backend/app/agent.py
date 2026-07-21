@@ -12,8 +12,10 @@ never logged or persisted.
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
+from typing import Any
 
 from app.config import settings
 
@@ -117,6 +119,103 @@ def _tab_snapshot(tab_id: str, fixture: dict) -> str | None:
         if s.get("tabId") == tab_id and s.get("snapshot"):
             return s["snapshot"]
     return None
+
+
+# The exact dot-paths the reward agent may assert over, and whether each is a
+# COUNT (dict/list → use len checks) or a scalar VALUE.
+_COUNT_PATHS = ["orders", "cart.items", "returns", "subscriptions"]
+_VALUE_PATHS = ["current_user_id", "cart.applied_promo"]
+
+
+def _paths_view(shop: dict) -> dict:
+    """Show each assertable path's REAL value in this world (counts for
+    collections, the value for scalars) so the reward agent targets real paths."""
+    cart = shop.get("cart", {}) or {}
+    return {
+        "orders": len(shop.get("orders", {}) or {}),
+        "cart.items": len(cart.get("items", []) or []),
+        "returns": len(shop.get("returns", {}) or {}),
+        "subscriptions": len(shop.get("subscriptions", {}) or {}),
+        "current_user_id": shop.get("current_user_id"),
+        "cart.applied_promo": cart.get("applied_promo"),
+    }
+
+
+def _coerce_check(c: Any) -> dict | None:
+    """Accept a check as a JSON object OR the shorthand string form the model
+    sometimes emits, e.g. 'state_len_gte{orders,1}' or 'state_nonempty{path}'."""
+    if isinstance(c, dict):
+        return c
+    if isinstance(c, str):
+        m = re.match(r"\s*(\w+)\s*\{([^}]*)\}\s*$", c)
+        if m:
+            args = [a.strip() for a in m.group(2).split(",") if a.strip()]
+            out: dict = {"kind": m.group(1)}
+            if args:
+                out["path"] = args[0]
+            if len(args) > 1:
+                v: Any = args[1]
+                try:
+                    v = int(v)
+                except ValueError:
+                    try:
+                        v = float(v)
+                    except ValueError:
+                        pass
+                out["value"] = v
+            return out
+        m2 = re.match(r"\s*(\w+)\s*$", c)
+        if m2:
+            return {"kind": m2.group(1)}
+    return None
+
+
+def generate_verifier_suite(brief: str, initial_shop: dict, golden_shop: dict, feedback: str | None = None) -> list[dict] | None:
+    """REWARD AGENT (Kashyap's oracle loop): author a verifier suite from a task
+    brief + the INITIAL vs GOLDEN world so it scores 0 on initial and 1 on golden.
+    Returns validated check-IR verifiers, or None to fall back."""
+    init_v, gold_v = _paths_view(initial_shop), _paths_view(golden_shop)
+    prompt = (
+        "You are a REWARD AGENT. Author a verifier suite that scores 0 on the "
+        "INITIAL world and 1 on the GOLDEN (task-completed) world.\n\n"
+        f"TASK BRIEF: {brief}\n\n"
+        "The two worlds, as path → value (collections shown as their count):\n"
+        f"  INITIAL: {json.dumps(init_v)}\n"
+        f"  GOLDEN:  {json.dumps(gold_v)}\n\n"
+        f"Assert ONLY over these exact paths. COUNT paths {_COUNT_PATHS} → use "
+        "state_len_gte / state_len_eq with a number. VALUE paths "
+        f"{_VALUE_PATHS} → use state_nonempty / state_empty / state_eq.\n\n"
+        'Each verifier is a JSON object. "check" MUST be a JSON OBJECT (not a '
+        'string). Example:\n'
+        '  {"id": "order_placed", "level": "backend", "assertion": "an order '
+        'was placed", "code": "orders>=1", "check": {"kind": "state_len_gte", '
+        '"path": "orders", "value": 1}}\n\n'
+        "Author 3-6 checks that DISTINGUISH golden from initial: every check must "
+        "pass on GOLDEN, and at least one must fail on INITIAL.\n"
+        + (f"\nYOUR PREVIOUS ATTEMPT FAILED THE ORACLE GATE. Fix this: {feedback}\n" if feedback else "")
+        + "\nReturn ONLY a JSON array of the verifier objects, no prose."
+    )
+    text = _call_claude(prompt, max_tokens=2500)
+    if text is None:
+        return None
+    arr = _extract_json_array(text)
+    suite: list[dict] = []
+    for i, c in enumerate(arr):
+        if not isinstance(c, dict):
+            continue
+        check = _coerce_check(c.get("check"))
+        if not isinstance(check, dict) or not check.get("kind"):
+            continue
+        # code must be non-empty — evaluate() fails a blank-code check closed.
+        code = str(c.get("code") or "").strip() or f"assert {check.get('kind', 'check')} {check.get('path', '')}".strip()
+        suite.append({
+            "id": str(c.get("id") or f"g{i + 1}"),
+            "level": c.get("level", "backend"),
+            "assertion": str(c.get("assertion", "")),
+            "code": code,
+            "check": check,
+        })
+    return suite or None
 
 
 def deterministic_branch(fixture: dict, from_step: int, correction: str) -> list[dict]:

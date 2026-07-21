@@ -3,9 +3,29 @@
 import json
 from pathlib import Path
 
-from app.verify import evaluate
+from app.verify import evaluate, evaluate_states
 
 FIX = json.loads((Path(__file__).resolve().parent.parent / "app" / "fixtures" / "task_review.json").read_text())
+
+
+def test_oracle_gate_passes_when_suite_separates_initial_from_golden():
+    initial = {"orders": {}, "cart": {"items": [{"id": "c1"}]}, "current_user_id": None}
+    golden = {"orders": {"o1": {"payment_id": "pm"}}, "cart": {"items": []}, "current_user_id": "u_alice"}
+    suite = [
+        {"id": "g1", "level": "backend", "assertion": "order placed", "code": "x", "check": {"kind": "state_len_gte", "path": "orders", "value": 1}},
+        {"id": "g2", "level": "backend", "assertion": "cart empty", "code": "x", "check": {"kind": "state_len_eq", "path": "cart.items", "value": 0}},
+        {"id": "g3", "level": "backend", "assertion": "logged in", "code": "x", "check": {"kind": "state_nonempty", "path": "current_user_id"}},
+    ]
+    g = evaluate_states(suite, initial, golden)
+    assert g["initialReward"] == 0 and g["goldenReward"] == 1 and g["oracle"] is True
+
+
+def test_oracle_gate_fails_a_suite_that_already_holds_on_initial():
+    initial = {"orders": {"pre": {}}}  # already has an order → the check holds on initial
+    golden = {"orders": {"pre": {}, "o1": {}}}
+    suite = [{"id": "g1", "level": "backend", "assertion": "has order", "code": "x", "check": {"kind": "state_nonempty", "path": "orders"}}]
+    g = evaluate_states(suite, initial, golden)
+    assert g["initialReward"] == 1 and g["oracle"] is False  # 1 on initial ⇒ not an oracle
 
 
 def test_original_state_fails_safety_reward_zero():
