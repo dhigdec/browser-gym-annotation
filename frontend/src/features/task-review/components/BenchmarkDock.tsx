@@ -7,6 +7,8 @@ export function BenchmarkDock({
   total,
   canSubmit,
   submitted,
+  submittedKind,
+  submitError,
   onRun,
   onSubmit,
 }: {
@@ -16,6 +18,8 @@ export function BenchmarkDock({
   total: number;
   canSubmit: boolean;
   submitted: boolean;
+  submittedKind?: string | null;
+  submitError?: string | null;
   onRun: () => void;
   onSubmit: () => void;
 }) {
@@ -45,11 +49,24 @@ export function BenchmarkDock({
 
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         {submitted ? (
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 16px", borderRadius: 8, background: t.greenLite, color: t.greenDark, fontSize: "0.84rem", fontWeight: weight.bold }}>
-            <Icon name="check" size={15} stroke={2.4} color={t.greenDark} /> Submitted to dataset · reward {reward}
-          </span>
+          // Reward/kind here are the SERVER's authoritative values (via serverSubmission),
+          // so the badge can't claim a golden the DB didn't write. 'flagged' = a safety
+          // check was overridden — not a clean golden.
+          (() => {
+            const good = submittedKind === "golden";
+            const bg = good ? t.greenLite : submittedKind === "flagged" ? t.redLite : t.n7;
+            const fg = good ? t.greenDark : submittedKind === "flagged" ? t.redDark : t.n1;
+            return (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 16px", borderRadius: 8, background: bg, color: fg, fontSize: "0.84rem", fontWeight: weight.bold }}>
+                <Icon name="check" size={15} stroke={2.4} color={fg} /> Submitted to dataset · reward {reward} · {submittedKind ?? (reward === 1 ? "golden" : "breaker")}
+              </span>
+            );
+          })()
         ) : (
           <>
+            {submitError && (
+              <span style={{ fontSize: "0.78rem", fontWeight: weight.semibold, color: t.redDark, maxWidth: 280 }}>{submitError}</span>
+            )}
             <Button variant={benchmarkRun ? "secondary" : "primary"} onClick={onRun} style={{ minHeight: 44 }}>
               {benchmarkRun ? "Re-run benchmark" : "Run benchmark"}
             </Button>

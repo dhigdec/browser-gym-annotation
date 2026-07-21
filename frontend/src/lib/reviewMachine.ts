@@ -30,6 +30,8 @@ export function makeInitialState(data: ReviewData): ReviewState {
     branchTail: null,
     rerunMode: null,
     gymResumeReward: null,
+    serverSubmission: null,
+    submitError: null,
   };
 }
 
@@ -55,6 +57,8 @@ export type Action =
   | { t: "editVerifier"; id: string; assertion: string; code: string }
   | { t: "override"; id: string }
   | { t: "submit" }
+  | { t: "submitConfirmed"; reward: number; kind: string }
+  | { t: "submitFailed"; error: string }
   | { t: "hydrate"; status: PersistStatus; rerunFrom: number | null; results: Record<string, string> };
 
 export type PersistStatus =
@@ -127,13 +131,20 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
       return { ...s, edits: { ...s.edits, [a.id]: { assertion: a.assertion, code: a.code } }, benchmarkRun: false, results: {}, submitted: false };
     case "override": {
       // Toggle: clicking the "1 override" pill removes the override (spec §3.2).
+      // Overriding invalidates the last run — force a re-benchmark so the override
+      // actually reaches a real server run (which records the overridden ids).
       const next = { ...s.overrides };
       if (next[a.id]) delete next[a.id];
       else next[a.id] = true;
-      return { ...s, overrides: next, submitted: false };
+      return { ...s, overrides: next, benchmarkRun: false, results: {}, submitted: false };
     }
     case "submit":
-      return canSubmit(s) ? { ...s, submitted: true } : s;
+      return s; // no-op: submission is server-confirmed via submitConfirmed/submitFailed
+    case "submitConfirmed":
+      // Only NOW is it submitted — with the SERVER's authoritative reward/kind.
+      return { ...s, submitted: true, submitError: null, serverSubmission: { reward: a.reward, kind: a.kind } };
+    case "submitFailed":
+      return { ...s, submitted: false, submitError: a.error };
     case "hydrate": {
       // Restore the gate chain + correction fork from a persisted session so
       // the annotator's progress survives a refresh.
@@ -197,6 +208,7 @@ export function verifierState(s: ReviewState, v: Verifier): MeterState {
 }
 
 export function reward(s: ReviewState): number | null {
+  if (s.serverSubmission) return s.serverSubmission.reward; // authoritative once submitted
   if (!s.benchmarkRun) return null;
   // Gym tasks carry the authoritative real milestone verdict (M8).
   if (s.data.source === "gym") return s.gymResumeReward ?? s.data.gymReward ?? 0;

@@ -29,5 +29,17 @@ def test_qa_agreement_and_adjudication(client, monkeypatch):
     assert len(accepted) == 1 and accepted[0]["sessionId"] == a
 
 
+def test_agreement_is_per_distinct_annotator_not_submission_count(client, monkeypatch):
+    monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
+    # bob is prolific: 2 sessions, both reward 0. alice: 1 session, reward 1.
+    _submit(client, "GYM-2041", "bob@x.io", False)
+    _submit(client, "GYM-2041", "bob@x.io", False)
+    _submit(client, "GYM-2041", "alice@x.io", True)
+    row = next(t for t in client.get("/api/qa/tasks").json()["tasks"] if t["taskExternalId"] == "GYM-2041")
+    assert row["submissions"] == 3 and row["annotators"] == 2
+    # per-annotator votes = {bob:0, alice:1} → agreement 0.5; submission-weighted would be 0.667.
+    assert row["agreement"] == 0.5
+
+
 def test_qa_unknown_task_404(client):
     assert client.get("/api/qa/tasks/NOPE/submissions").status_code == 404

@@ -135,6 +135,53 @@ def test_submit_locks_the_session(client, monkeypatch):
     assert client.post(f"/api/sessions/{sid}/submit", json={"reward": 0, "override": True, "overrideReason": "x"}).status_code == 409
 
 
+def test_patch_cannot_set_submitted_or_out_of_range(client):
+    sid = _open(client)
+    assert client.patch(f"/api/sessions/{sid}", json={"status": "submitted"}).status_code == 400  # only /submit does that
+    assert client.patch(f"/api/sessions/{sid}", json={"rerunFrom": -5}).status_code == 422
+
+
+def test_submitted_session_is_immutable_via_patch_and_rerun(client, monkeypatch):
+    monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
+    sid = _open(client)
+    vs = _verifiers(client)
+    client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
+    client.post(f"/api/sessions/{sid}/run", json={"corrected": True, "verifiers": vs, "overrides": []})
+    assert client.post(f"/api/sessions/{sid}/submit", json={"reward": 1, "override": False}).status_code == 200
+    # the submit lock is now enforced on BOTH reopen paths (was the blocker)
+    assert client.patch(f"/api/sessions/{sid}", json={"status": "draft"}).status_code == 409
+    assert client.post(f"/api/sessions/{sid}/rerun", json={"fromStep": 5, "correction": "x"}).status_code == 409
+
+
+def test_rerun_rejects_out_of_range_step(client, monkeypatch):
+    monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
+    sid = _open(client)
+    assert client.post(f"/api/sessions/{sid}/rerun", json={"fromStep": 9999, "correction": "x"}).status_code == 422
+
+
+def test_malformed_check_ir_fails_closed_not_500(client, monkeypatch):
+    monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
+    sid = _open(client)
+    bad = [{"id": "m", "level": "backend", "assertion": "x", "code": "c", "check": {"kind": "state_lte", "path": "p"}}]  # missing 'value'
+    client.put(f"/api/sessions/{sid}/suite", json={"verifiers": bad})
+    r = client.post(f"/api/sessions/{sid}/run", json={"corrected": False, "verifiers": bad, "overrides": []})
+    assert r.status_code == 200                       # not a 500
+    assert r.json()["results"]["m"] == "fail"         # malformed IR failed closed
+
+
+def test_safety_override_flags_the_sample_and_derives_provenance(client, monkeypatch):
+    monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
+    sid = _open(client)
+    vs = _verifiers(client)
+    client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
+    # original state fails the SAFETY check sa1; override it to force reward 1
+    r = client.post(f"/api/sessions/{sid}/run", json={"corrected": False, "verifiers": vs, "overrides": ["sa1"]})
+    assert r.json()["reward"] == 1
+    sub = client.post(f"/api/sessions/{sid}/submit", json={"reward": 1, "override": False}).json()["submission"]
+    assert sub["kind"] == "flagged"      # NOT a clean golden — a safety check was overridden
+    assert sub["override"] is True       # provenance derived from the run, not the client flag
+
+
 def test_open_session_records_a_trajectory(client, db_session):
     from app.models import Trajectory, TrajectoryStep
 

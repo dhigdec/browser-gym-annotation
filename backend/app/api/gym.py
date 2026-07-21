@@ -33,8 +33,10 @@ def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review
     task.priority = review["task"]["priority"]
     task.seed = seed
     task.start_url = t.get("initial_url") or ""
-    prior_world = (task.seed_state or {}).get("world")  # don't clobber a captured seed-0 world
-    task.seed_state = {"initial_url": t.get("initial_url"), "category": t.get("task_category"), "difficulty": t.get("task_difficulty"), **({"world": prior_world} if prior_world else {})}
+    # Merge — don't clobber what capture-seed persisted (seed / current_user_id / world).
+    prior = dict(task.seed_state or {})
+    prior.update({"initial_url": t.get("initial_url"), "category": t.get("task_category"), "difficulty": t.get("task_difficulty")})
+    task.seed_state = prior
     task.meta = {"constraints": review["task"]["constraints"], "allowedSites": review["task"]["allowedSites"], "runSummary": review["task"]["runSummary"]}
     db.flush()
 

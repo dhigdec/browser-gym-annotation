@@ -20,6 +20,16 @@ def test_oracle_gate_passes_when_suite_separates_initial_from_golden():
     assert g["initialReward"] == 0 and g["goldenReward"] == 1 and g["oracle"] is True
 
 
+def test_state_empty_and_eq_fail_closed_on_absent_path():
+    from app.verify import _eval_check
+
+    ctx = {"state": {"a": {"b": None}}, "trace": [], "allowed_tabs": set()}
+    assert _eval_check({"kind": "state_empty", "path": "a.b"}, ctx) is True      # present-but-null → empty
+    assert _eval_check({"kind": "state_empty", "path": "a.zzz"}, ctx) is False   # absent → fail closed
+    assert _eval_check({"kind": "state_eq", "path": "a.zzz", "value": None}, ctx) is False  # absent → fail closed
+    assert _eval_check({"kind": "state_eq", "path": "a.b"}, ctx) is False        # no 'value' key → fail closed
+
+
 def test_oracle_gate_fails_a_suite_that_already_holds_on_initial():
     initial = {"orders": {"pre": {}}}  # already has an order → the check holds on initial
     golden = {"orders": {"pre": {}, "o1": {}}}

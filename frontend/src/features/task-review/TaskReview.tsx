@@ -24,6 +24,7 @@ import { parseStateEdits } from "../../lib/gymEdits";
 import type { AutogenResult, QaSubmission, QaTaskRow } from "../../lib/api";
 import type { ReviewData, Step, TaskListItem, Verifier } from "../../lib/types";
 import {
+  canSubmit,
   isResolved,
   isVerified,
   makeInitialState,
@@ -198,19 +199,24 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, suiteSig]);
 
-  // Submission — write the dataset row once.
-  useEffect(() => {
-    if (!sessionId) return;
-    if (state.submitted && !submittedRef.current) {
-      submittedRef.current = true;
-      void submitSession(sessionId, {
-        reward: reward(state) ?? 0,
-        override: Object.keys(state.overrides).length > 0,
-        kind: reward(state) === 1 ? "golden" : "breaker",
-      });
+  // Submission — await the server, reconcile from its snapshot, surface failures.
+  // Never optimistically show "submitted"; the server is authoritative.
+  const handleSubmit = async () => {
+    if (!canSubmit(state) || submittedRef.current) return;
+    if (!sessionId) { dispatch({ t: "submitFailed", error: "Not saved — the backend is offline." }); return; }
+    submittedRef.current = true;
+    const snap = await submitSession(sessionId, {
+      reward: reward(state) ?? 0,
+      override: Object.keys(state.overrides).length > 0,
+      kind: reward(state) === 1 ? "golden" : "breaker",
+    });
+    if (snap?.submission) {
+      dispatch({ t: "submitConfirmed", reward: snap.submission.reward, kind: snap.submission.kind });
+    } else {
+      submittedRef.current = false; // allow retry
+      dispatch({ t: "submitFailed", error: "Submit failed — nothing was saved. Check the connection and retry." });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, state.submitted]);
+  };
 
   const steps = visibleSteps(state);
   const current = steps[state.step];
@@ -349,7 +355,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
           onEditVerifier={(id, assertion, code) => dispatch({ t: "editVerifier", id, assertion, code })}
           onOverride={(id) => dispatch({ t: "override", id })}
           onRun={runBenchmark}
-          onSubmit={() => dispatch({ t: "submit" })}
+          onSubmit={handleSubmit}
         />
       </div>
 

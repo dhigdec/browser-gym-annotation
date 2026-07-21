@@ -30,14 +30,31 @@ def _agreement(rewards: list[int]) -> dict:
     }
 
 
+def _per_annotator_votes(rows) -> tuple[dict, int, bool]:
+    """Collapse (email, reward, accepted, created_at) rows to ONE vote per distinct
+    annotator (their latest submission), so agreement isn't skewed by a prolific
+    annotator. Returns (email→reward, total_submissions, adjudicated)."""
+    votes: dict[str, dict] = {}
+    total, adjudicated = 0, False
+    for email, reward, accepted, created in rows:
+        total += 1
+        adjudicated = adjudicated or bool(accepted)
+        key = email or "(anonymous)"
+        cur = votes.get(key)
+        if cur is None or created > cur["at"]:
+            votes[key] = {"reward": reward, "at": created}
+    return ({k: v["reward"] for k, v in votes.items()}, total, adjudicated)
+
+
 @router.get("/tasks")
 def qa_tasks(db: Session = Depends(get_db)) -> dict:
-    """Every task that has ≥1 submission, with inter-annotator agreement."""
+    """Every task that has ≥1 submission, with inter-annotator agreement (one vote
+    per distinct annotator)."""
     rows = db.execute(
         select(
             models.Task.external_id, models.Task.title,
-            models.Submission.reward, models.Submission.accepted,
-            models.Annotator.email,
+            models.Annotator.email, models.Submission.reward,
+            models.Submission.accepted, models.Submission.created_at,
         )
         .join(models.ReviewSession, models.ReviewSession.id == models.Submission.session_id)
         .join(models.Task, models.Task.id == models.ReviewSession.task_id)
@@ -45,25 +62,20 @@ def qa_tasks(db: Session = Depends(get_db)) -> dict:
     ).all()
 
     by_task: dict[str, dict] = {}
-    for ext, title, reward, accepted, email in rows:
-        t = by_task.setdefault(ext, {"title": title, "rewards": [], "annotators": set(), "adjudicated": False})
-        t["rewards"].append(reward)
-        if email:
-            t["annotators"].add(email)
-        if accepted:
-            t["adjudicated"] = True
+    for ext, title, email, reward, accepted, created in rows:
+        by_task.setdefault(ext, {"title": title, "rows": []})["rows"].append((email, reward, accepted, created))
 
     out = []
     for ext, t in by_task.items():
-        ag = _agreement(t["rewards"])
+        votes, total, adjudicated = _per_annotator_votes(t["rows"])
+        ag = _agreement(list(votes.values()))  # one reward per distinct annotator
         out.append({
             "taskExternalId": ext, "title": t["title"],
-            "submissions": ag["count"], "annotators": len(t["annotators"]),
-            "adjudicated": t["adjudicated"], "agreement": ag["agreement"],
+            "submissions": total, "annotators": len(votes),
+            "adjudicated": adjudicated, "agreement": ag["agreement"],
             "majorityReward": ag["majorityReward"], "unanimous": ag["unanimous"],
             "disputed": not ag["unanimous"], "distribution": ag["distribution"],
         })
-    # Surface the ones that need a reviewer first: disputed + un-adjudicated.
     out.sort(key=lambda x: (x["adjudicated"], x["unanimous"], -x["submissions"]))
     return {"tasks": out}
 
@@ -86,8 +98,9 @@ def qa_submissions(external_id: str, db: Session = Depends(get_db)) -> dict:
         "override": sub.submitted_with_override, "overrideReason": sub.override_reason,
         "accepted": sub.accepted, "at": sub.created_at.isoformat(),
     } for sub, email in rows]
+    votes, _total, _adj = _per_annotator_votes([(email, sub.reward, sub.accepted, sub.created_at) for sub, email in rows])
     return {"taskExternalId": external_id, "title": task.title,
-            "agreement": _agreement([s["reward"] for s in subs]), "submissions": subs}
+            "agreement": _agreement(list(votes.values())), "submissions": subs}
 
 
 class AdjudicateBody(BaseModel):

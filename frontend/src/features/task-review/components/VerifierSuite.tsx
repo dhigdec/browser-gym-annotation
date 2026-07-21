@@ -196,6 +196,8 @@ export function VerifierSuite({
         total={allVerifiers(state).length}
         canSubmit={canSubmit(state)}
         submitted={state.submitted}
+        submittedKind={state.serverSubmission?.kind ?? null}
+        submitError={state.submitError}
         onRun={onRun}
         onSubmit={onSubmit}
       />

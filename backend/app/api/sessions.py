@@ -168,8 +168,10 @@ def _run_benchmark(db: Session, s: ReviewSession, corrected: bool, overrides: se
     suite = _latest_suite(db, s.id)
     if suite is None:
         raise HTTPException(status_code=409, detail="save the verifier suite before running the benchmark")
-    out = evaluate(_persisted_verifiers(db, suite), _session_fixture(db, s), corrected, overrides)
-    db.add(BenchmarkRun(suite_id=suite.id, reward=out["reward"], results=out["results"]))
+    persisted = _persisted_verifiers(db, suite)
+    out = evaluate(persisted, _session_fixture(db, s), corrected, overrides)
+    applied_overrides = sorted(overrides & {v["id"] for v in persisted})  # the ones that actually applied
+    db.add(BenchmarkRun(suite_id=suite.id, reward=out["reward"], results=out["results"], overridden=applied_overrides))
     if s.status in _OPEN:
         s.status = "benchmark_run"
     _audit(
@@ -335,13 +337,20 @@ def get_session(session_id: UUID, db: Session = Depends(get_db)) -> dict:
 @router.patch("/sessions/{session_id}")
 def patch_session(session_id: UUID, body: PatchSessionBody, db: Session = Depends(get_db)) -> dict:
     s = _get_session(db, session_id)
+    # A submitted session is immutable — no status/correction changes via PATCH.
+    if s.status == "submitted":
+        raise HTTPException(status_code=409, detail="session is submitted (immutable) — start a new session to re-annotate")
     if body.status is not None:
-        if body.status not in _STATUSES:
-            raise HTTPException(status_code=400, detail=f"bad status {body.status!r}")
+        # 'submitted' is reachable ONLY through /submit, never by a direct status write.
+        if body.status not in _OPEN:
+            raise HTTPException(status_code=400, detail=f"status {body.status!r} is not a settable open state")
         if s.status != body.status:
             s.status = body.status
             _audit(db, "", "session.status", str(s.id), {"status": body.status}, session_id=s.id)
     if body.rerunFrom is not None:
+        nsteps = len(_session_fixture(db, s).get("steps", []))
+        if not 0 <= body.rerunFrom <= nsteps:
+            raise HTTPException(status_code=422, detail=f"rerunFrom {body.rerunFrom} out of range 0..{nsteps}")
         s.rerun_from = body.rerunFrom
         _audit(db, "", "session.correct", str(s.id), {"rerunFrom": body.rerunFrom}, session_id=s.id)
     db.commit()
@@ -355,7 +364,13 @@ def rerun(session_id: UUID, body: RerunBody, db: Session = Depends(get_db)) -> d
     versioned via parent_id, never overwritten — capturing the human correction.
     The continuation is deterministic today; a live agent plugs in at mode='agent'."""
     s = _get_session(db, session_id)
-    branch_steps, actual_mode = _branch_for(body.correction, body.mode, body.fromStep, _session_fixture(db, s))
+    if s.status == "submitted":
+        raise HTTPException(status_code=409, detail="session is submitted (immutable) — start a new session to re-annotate")
+    fixture = _session_fixture(db, s)
+    nsteps = len(fixture.get("steps", []))
+    if not 0 <= body.fromStep <= nsteps:
+        raise HTTPException(status_code=422, detail=f"fromStep {body.fromStep} out of range 0..{nsteps}")
+    branch_steps, actual_mode = _branch_for(body.correction, body.mode, body.fromStep, fixture)
     parent = db.scalar(
         select(TrajectoryBranch)
         .where(TrajectoryBranch.session_id == s.id)
@@ -450,26 +465,33 @@ def submit(session_id: UUID, body: SubmitBody, db: Session = Depends(get_db)) ->
     if last_run is None:
         raise HTTPException(status_code=409, detail="run the benchmark before submitting")
     reward = int(last_run.reward)  # authoritative — server-computed from the persisted suite
-    if reward != 1 and not body.override:
+    overridden_ids = list(last_run.overridden or [])  # verifiers a human forced to pass
+    used_override = bool(overridden_ids) or body.override  # provenance is server-derived, not just the client flag
+    if reward != 1 and not used_override:
         raise HTTPException(status_code=409, detail="reward != 1 requires an override")
-    kind = "golden" if reward == 1 else "breaker"
+    # A reward reached by overriding a SAFETY verifier is NOT a clean golden — the
+    # provenance must ride on the sample so an unsafe run can't ship as training gold.
+    safety_overridden = bool(overridden_ids) and db.scalar(
+        select(Verifier).where(
+            Verifier.suite_id == suite.id, Verifier.ext_id.in_(overridden_ids), Verifier.level == "safety"
+        )
+    ) is not None
+    kind = "flagged" if safety_overridden else ("golden" if reward == 1 else "breaker")
     sub = Submission(
         session_id=s.id,
         reward=reward,
         kind=kind,
-        submitted_with_override=body.override,
-        override_reason=body.overrideReason,
+        submitted_with_override=used_override,
+        override_reason=(body.overrideReason if used_override else None),
     )
     db.add(sub)
     s.status = "submitted"
     _audit(
         db, "", "session.submit", str(s.id),
         {
-            "reward": reward,
-            "clientAsserted": body.reward,
-            "diverged": body.reward != reward,
-            "override": body.override,
-            "kind": kind,
+            "reward": reward, "clientAsserted": body.reward, "diverged": body.reward != reward,
+            "override": used_override, "overriddenVerifiers": overridden_ids,
+            "safetyOverridden": safety_overridden, "kind": kind,
         },
         session_id=s.id,
     )

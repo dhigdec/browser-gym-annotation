@@ -38,6 +38,32 @@ const generated = (): ReviewState => {
   return reducer(s, { t: "generate" });
 };
 
+describe("submit reconciliation (server-authoritative)", () => {
+  it("is 'submitted' only after the server confirms, with the SERVER's reward", () => {
+    let s = generated();
+    s = reducer(s, { t: "benchmarkComplete", results: { v1: "pass", v2: "pass" } });
+    // client would compute reward 1; the server says 0 / breaker — that must win.
+    s = reducer(s, { t: "submitConfirmed", reward: 0, kind: "breaker" });
+    expect(s.submitted).toBe(true);
+    expect(reward(s)).toBe(0);
+  });
+
+  it("submitFailed surfaces an error and does NOT mark submitted", () => {
+    let s = generated();
+    s = reducer(s, { t: "submitFailed", error: "boom" });
+    expect(s.submitted).toBe(false);
+    expect(s.submitError).toBe("boom");
+  });
+
+  it("overriding forces a re-benchmark so the override reaches a real run", () => {
+    let s = generated();
+    s = reducer(s, { t: "benchmarkComplete", results: {} });
+    expect(s.benchmarkRun).toBe(true);
+    s = reducer(s, { t: "override", id: "v1" });
+    expect(s.benchmarkRun).toBe(false);
+  });
+});
+
 describe("gym resume", () => {
   it("re-verifying a gym task overrides the reward with the real verdict", () => {
     const gymData: ReviewData = { ...data, source: "gym", gymReward: 0, gymResume: { seed: 0, urlTrail: [], finalUrl: "" } };

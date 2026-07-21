@@ -46,7 +46,10 @@ def build_sample(db: Session, s: models.ReviewSession) -> dict:
         run = db.scalar(
             select(models.BenchmarkRun).where(models.BenchmarkRun.suite_id == suite.id).order_by(models.BenchmarkRun.created_at.desc())
         )
-    sub = _latest(db, models.Submission, s.id, models.Submission.created_at.desc())
+    # Prefer the ACCEPTED (adjudicated) submission over merely the latest.
+    sub = db.scalar(
+        select(models.Submission).where(models.Submission.session_id == s.id, models.Submission.accepted.is_(True)).order_by(models.Submission.created_at.desc())
+    ) or _latest(db, models.Submission, s.id, models.Submission.created_at.desc())
 
     recorded = _steps_of(traj)
     # Golden = the recorded steps up to the correction point + the corrected tail.
@@ -90,7 +93,9 @@ def build_sample(db: Session, s: models.ReviewSession) -> dict:
         "reward": reward,
         "submission": None if sub is None else {
             "reward": sub.reward, "kind": sub.kind, "accepted": sub.accepted,
-            "override": sub.submitted_with_override, "at": sub.created_at.isoformat(),
+            "override": sub.submitted_with_override,
+            "overridden_verifiers": (run.overridden if run else []),  # provenance: which checks a human forced
+            "at": sub.created_at.isoformat(),
         },
         "annotator": annotator.email if annotator else None,
         "metadata": {"source": s.source, "agent": s.agent or None, "status": s.status, "created_at": s.created_at.isoformat()},

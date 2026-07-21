@@ -32,6 +32,9 @@ def _snapshot_text(key: str) -> str | None:
     return _WS.sub(" ", _TAG.sub(" ", f.read_text(encoding="utf-8"))).lower()
 
 
+_MISSING = object()
+
+
 def _get(state: dict, path: str) -> Any:
     cur: Any = state
     for part in path.split("."):
@@ -39,6 +42,17 @@ def _get(state: dict, path: str) -> Any:
             return None
         cur = cur[part]
     return cur
+
+
+def _has(state: dict, path: str) -> bool:
+    """Whether `path` actually exists in the state (vs a typo/absent path). A
+    check on an absent path is unproven → must fail closed, not read as None."""
+    cur: Any = state
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return False
+        cur = cur[part]
+    return True
 
 
 def _num(x: Any) -> float | None:
@@ -73,7 +87,8 @@ def _eval_check(check: dict, ctx: dict) -> bool:
     if kind == "state_false":
         return _get(state, check["path"]) is False
     if kind == "state_eq":
-        return _get(state, check["path"]) == check.get("value")
+        # Require the path to exist AND a value to be given — else unproven, fail closed.
+        return "value" in check and _has(state, check["path"]) and _get(state, check["path"]) == check["value"]
     if kind == "state_lte":
         v = _num(_get(state, check["path"]))
         return v is not None and v <= float(check["value"])
@@ -83,7 +98,8 @@ def _eval_check(check: dict, ctx: dict) -> bool:
     if kind == "state_nonempty":
         return bool(_get(state, check["path"]))
     if kind == "state_empty":
-        return not _get(state, check["path"])
+        # An ABSENT path is unproven → fail closed; only a present-but-falsy value passes.
+        return _has(state, check["path"]) and not _get(state, check["path"])
     if kind == "state_len_gte":
         v = _get(state, check["path"])
         return hasattr(v, "__len__") and len(v) >= int(check["value"])
@@ -163,12 +179,18 @@ def evaluate(verifiers: list[dict], fixture: dict, corrected: bool, overrides: s
             results[vid] = "fail"  # unexecutable (e.g. free-text human check) → attest via override
             continue
         executed += 1
-        if check.get("kind") == "trace_policy":  # LLM trajectory-policy verifier (JP)
-            results[vid] = "pass" if _policy_verdict(check, ctx) else "fail"
-        elif v.get("level") == "semantic":  # LLM-judge level (M5b), deterministic fallback
-            results[vid] = "pass" if _semantic_verdict(v.get("assertion", ""), check, ctx, fixture) else "fail"
-        else:
-            results[vid] = "pass" if _eval_check(check, ctx) else "fail"
+        # A malformed check IR (missing field, bad type) must FAIL CLOSED, never
+        # crash the whole benchmark run.
+        try:
+            if check.get("kind") == "trace_policy":  # LLM trajectory-policy verifier (JP)
+                ok = _policy_verdict(check, ctx)
+            elif v.get("level") == "semantic":  # LLM-judge level (M5b), deterministic fallback
+                ok = _semantic_verdict(v.get("assertion", ""), check, ctx, fixture)
+            else:
+                ok = _eval_check(check, ctx)
+        except Exception:  # noqa: BLE001 — unprovable/malformed → fail closed
+            ok = False
+        results[vid] = "pass" if ok else "fail"
     reward = 1 if verifiers and all(r == "pass" for r in results.values()) else 0
     return {
         "results": results,

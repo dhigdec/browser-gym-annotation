@@ -145,4 +145,9 @@ export interface ReviewState {
   /** real gym verdict after a resume-from-corrected-state (M-resume); overrides
    *  gymReward once a gym task has been re-verified. */
   gymResumeReward: number | null;
+  /** server-confirmed submission (authoritative reward/kind) — set only after the
+   *  submit POST succeeds, so the UI never shows a golden that wasn't written. */
+  serverSubmission: { reward: number; kind: string } | null;
+  /** an inline error if the submit POST failed (so it's never silently lost). */
+  submitError: string | null;
 }

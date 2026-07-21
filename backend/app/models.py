@@ -158,6 +158,7 @@ class BenchmarkRun(Base):
     suite_id: Mapped[UUID] = _fk("verifier_suite.id")
     reward: Mapped[int] = mapped_column(default=0)
     results: Mapped[dict] = mapped_column(JSON, default=dict)  # per-verifier pass/fail
+    overridden: Mapped[list] = mapped_column(JSON, default=list)  # verifier ids a human forced to pass
     created_at: Mapped[datetime] = mapped_column(default=func.now())
 
     suite: Mapped[VerifierSuite] = relationship(back_populates="runs")
