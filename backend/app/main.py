@@ -31,9 +31,13 @@ async def lifespan(_: FastAPI):
     # create_all in a later milestone).
     try:
         Base.metadata.create_all(engine)
-        log.info("db ready — tables ensured")
+        from app.db import SessionLocal
+        from app.seed import seed_catalog
+        with SessionLocal() as db:
+            info = seed_catalog(db)
+        log.info("db ready — catalog seeded %s", info)
     except Exception as e:  # noqa: BLE001
-        log.warning("db unavailable at startup (%s) — serving fixtures only", e)
+        log.warning("db bootstrap issue (%s) — serving fixtures only", e)
     yield
 
 
