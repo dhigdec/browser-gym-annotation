@@ -79,6 +79,28 @@ def test_resume_502_when_gym_unreachable(client, monkeypatch):
     assert client.post("/api/gym/resume", json={"taskId": "A1/x", "seed": 0}).status_code == 502
 
 
+def test_breaker_gate_rejects_non_discriminating_policy(monkeypatch):
+    """The gate must KEEP a policy whose violating counterfactual is flagged, and
+    REJECT one whose counterfactual is not (it doesn't actually discriminate)."""
+    from app.api import gym as gymmod
+
+    monkeypatch.setattr("app.agent.generate_trace_policies", lambda brief, actions: ["A", "B"])
+    monkeypatch.setattr("app.agent.generate_policy_counterfactual", lambda pol, actions: f"__CF__ {pol}")
+
+    def fake_judge(policy, trace):
+        is_counterfactual = any("__CF__" in (s.get("description") or "") for s in trace)
+        if not is_counterfactual:
+            return True  # oracle OBEYS both policies
+        return False if policy == "A" else True  # A's counterfactual VIOLATES; B's obeys ⇒ B doesn't discriminate
+
+    monkeypatch.setattr("app.agent.judge_trajectory", fake_judge)
+
+    gated = gymmod._gate_policies("brief", [{"idx": 0, "description": "did the task"}], [{"action": "click"}])
+    kept = [p for p in gated if p["discriminates"]]
+    assert {p["assertion"] for p in kept} == {"A"}  # B was REJECTED by the breaker gate
+    assert next(p for p in gated if p["assertion"] == "B")["discriminates"] is False
+
+
 def test_autogen_verifiers_is_async(client, monkeypatch):
     # gym unreachable → reward-agent job reaches a terminal error, pollable.
     monkeypatch.setattr("app.gym_client.reset", lambda *a, **k: None)

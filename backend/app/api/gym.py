@@ -33,7 +33,8 @@ def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review
     task.priority = review["task"]["priority"]
     task.seed = seed
     task.start_url = t.get("initial_url") or ""
-    task.seed_state = {"initial_url": t.get("initial_url"), "category": t.get("task_category"), "difficulty": t.get("task_difficulty")}
+    prior_world = (task.seed_state or {}).get("world")  # don't clobber a captured seed-0 world
+    task.seed_state = {"initial_url": t.get("initial_url"), "category": t.get("task_category"), "difficulty": t.get("task_difficulty"), **({"world": prior_world} if prior_world else {})}
     task.meta = {"constraints": review["task"]["constraints"], "allowedSites": review["task"]["allowedSites"], "runSummary": review["task"]["runSummary"]}
     db.flush()
 
@@ -243,6 +244,28 @@ class ResumeRunBody(BaseModel):
     agent: str = "llm"
 
 
+def _gate_policies(brief: str, golden_trace: list[dict], actions: list[dict]) -> list[dict]:
+    """Propose negative-constraint policies and apply the BREAKER GATE: keep only
+    those that DISCRIMINATE — the oracle trace OBEYS the policy AND a minimal
+    violating counterfactual is FLAGGED VIOLATED. Returns every proposed policy
+    tagged with `discriminates` (callers filter to the kept ones)."""
+    out: list[dict] = []
+    for i, pol in enumerate(agent.generate_trace_policies(brief, actions)):
+        if agent.judge_trajectory(pol, golden_trace) is not True:  # the oracle must OBEY it
+            continue
+        cf = agent.generate_policy_counterfactual(pol, actions)
+        discriminates = False
+        if cf:
+            bad_trace = golden_trace + [{"idx": len(golden_trace), "type": "action", "tabId": "gym", "description": cf}]
+            discriminates = agent.judge_trajectory(pol, bad_trace) is False  # counterfactual must VIOLATE
+        out.append({
+            "id": f"p{i + 1}", "level": "safety", "assertion": pol,
+            "code": f"policy: {pol}", "check": {"kind": "trace_policy", "policy": pol},
+            "discriminates": discriminates, "counterexample": cf,
+        })
+    return out
+
+
 def _autogen_verifiers_job(task_id: str, seed: int, iterations: int) -> dict:
     """The autonomous ORACLE LOOP (Kashyap's reward-agent design) on our stack:
     capture the INITIAL world (reset) and the GOLDEN world (oracle run), then have
@@ -291,23 +314,7 @@ def _autogen_verifiers_job(task_id: str, seed: int, iterations: int) -> dict:
         for s in steps
     ]
     actions = [{"action": s.get("action_kind"), "args": s.get("action_args")} for s in steps]
-    policy_checks = []
-    for i, pol in enumerate(agent.generate_trace_policies(brief, actions)):
-        if agent.judge_trajectory(pol, golden_trace) is not True:  # the oracle must OBEY it
-            continue
-        # Breaker gate: a minimal violating counterfactual must be FLAGGED, proving
-        # the policy actually discriminates (0 on a violation, 1 on the correct run).
-        cf = agent.generate_policy_counterfactual(pol, actions)
-        discriminates = False
-        if cf:
-            bad_trace = golden_trace + [{"idx": len(golden_trace), "type": "action", "tabId": "gym", "description": cf}]
-            discriminates = agent.judge_trajectory(pol, bad_trace) is False
-        policy_checks.append({
-            "id": f"p{i + 1}", "level": "safety", "assertion": pol,
-            "code": f"policy: {pol}", "check": {"kind": "trace_policy", "policy": pol},
-            "discriminates": discriminates, "counterexample": cf,
-        })
-
+    policy_checks = _gate_policies(brief, golden_trace, actions)
     validated = [p for p in policy_checks if p["discriminates"]]
     return {
         "oracle": bool(gate and gate.get("oracle")),
@@ -361,6 +368,38 @@ class CaptureSeedBody(BaseModel):
 def gym_capture_seed(task_id: str, body: CaptureSeedBody, db: Session = Depends(get_db)) -> dict:
     """Persist a task's full seed-0 world into the DB (task.seed_state)."""
     return _capture_seed_world(db, task_id, body.seed)
+
+
+def _capture_seeds_job(limit: int | None, seed: int) -> dict:
+    """Capture the full seed-0 world for many gym tasks into the DB (each committed
+    independently so partial progress survives). Slow — one gym reset per task."""
+    tasks = gym_client.tasks()
+    if tasks is None:
+        raise jobs.JobFailure("gym unreachable")
+    if limit:
+        tasks = tasks[:limit]
+    captured, failed = 0, 0
+    for tid in tasks:
+        try:
+            with SessionLocal() as db:
+                _capture_seed_world(db, tid, seed)
+            captured += 1
+        except Exception:  # noqa: BLE001 — skip a task that can't be captured, keep going
+            failed += 1
+    return {"captured": captured, "failed": failed, "total": len(tasks)}
+
+
+class CaptureSeedsBody(BaseModel):
+    limit: int | None = None
+    seed: int = 0
+
+
+@router.post("/capture-seeds")
+def gym_capture_seeds(body: CaptureSeedsBody) -> dict:
+    """Bulk-capture seed-0 worlds for gym tasks into the DB (async job; poll
+    GET /api/gym/jobs/{id}). Pass a limit to cap the batch."""
+    job = jobs.store.submit("capture-seeds", _capture_seeds_job, body.limit, body.seed)
+    return {"jobId": job.id, "status": job.status}
 
 
 class AutogenBody(BaseModel):
