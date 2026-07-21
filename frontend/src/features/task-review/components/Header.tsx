@@ -28,8 +28,9 @@ function PagerBox({ dir, onClick, disabled }: { dir: "chevronLeft" | "chevronRig
   );
 }
 
-export function Header({ index, total, onPrev, onNext, onSkip, onBrowseGym, gymTaskId, onExitGym }: { index: number; total: number; onPrev: () => void; onNext: () => void; onSkip: () => void; onBrowseGym: () => void; gymTaskId?: string | null; onExitGym?: () => void }) {
+export function Header({ index, total, onPrev, onNext, onSkip, onBrowseGym, gymTaskId, onExitGym, onOpenQa, annotatorEmail, onSetAnnotator }: { index: number; total: number; onPrev: () => void; onNext: () => void; onSkip: () => void; onBrowseGym: () => void; gymTaskId?: string | null; onExitGym?: () => void; onOpenQa?: () => void; annotatorEmail?: string; onSetAnnotator?: (email: string) => void }) {
   const mono = { fontFamily: t.fontMono } as const;
+  const initial = (annotatorEmail || "?").trim().charAt(0).toUpperCase() || "?";
   return (
     <header
       style={{
@@ -75,23 +76,22 @@ export function Header({ index, total, onPrev, onNext, onSkip, onBrowseGym, gymT
       <span onClick={onBrowseGym} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: "0.78125rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer", whiteSpace: "nowrap" }}>
         <Icon name="swap" size={14} /> Gym tasks
       </span>
+      {onOpenQa && (
+        <span onClick={onOpenQa} title="Multi-annotator QA — agreement + adjudication" style={{ fontSize: "0.78125rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer", whiteSpace: "nowrap" }}>
+          ⚖ QA review
+        </span>
+      )}
       <span style={{ flex: 1 }} />
       <FocusBadge>Multitab · Web Navigation</FocusBadge>
-      <span
-        style={{
-          width: 34,
-          height: 34,
-          borderRadius: t.radiusFull,
-          background: t.primary7,
-          color: t.n9,
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: "0.75rem",
-          fontWeight: weight.bold,
-        }}
-      >
-        QA
+      <span title="You're annotating as this identity — change it to submit as a different annotator" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: "0.68rem", color: t.n3, fontWeight: weight.semibold, textTransform: "uppercase", letterSpacing: "0.06em" }}>as</span>
+        <input
+          value={annotatorEmail ?? ""}
+          onChange={(e) => onSetAnnotator?.(e.target.value)}
+          spellCheck={false}
+          style={{ width: 168, padding: "5px 9px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, background: t.n85, color: t.n1, fontFamily: t.fontMono, fontSize: "0.72rem", outline: "none" }}
+        />
+        <span style={{ width: 34, height: 34, borderRadius: t.radiusFull, background: t.primary7, color: t.n9, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "0.82rem", fontWeight: weight.bold, flexShrink: 0 }}>{initial}</span>
       </span>
     </header>
   );

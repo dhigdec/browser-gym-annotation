@@ -1,9 +1,12 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { Icon, t, weight } from "../../ds";
 import {
+  adjudicate,
   autogenVerifiers,
   driveForwardGym,
   fetchGymStatus,
+  fetchQaSubmissions,
+  fetchQaTasks,
   fetchGymTasks,
   fetchReview,
   fetchTasks,
@@ -17,7 +20,7 @@ import {
   submitSession,
 } from "../../lib/api";
 import { parseStateEdits } from "../../lib/gymEdits";
-import type { AutogenResult } from "../../lib/api";
+import type { AutogenResult, QaSubmission, QaTaskRow } from "../../lib/api";
 import type { ReviewData, Step, TaskListItem, Verifier } from "../../lib/types";
 import {
   isResolved,
@@ -85,6 +88,9 @@ interface TaskNav {
   onBrowseGym: () => void;
   gymTaskId?: string | null;
   onExitGym?: () => void;
+  onOpenQa: () => void;
+  annotatorEmail: string;
+  onSetAnnotator: (email: string) => void;
 }
 
 function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData; nav: TaskNav; startFresh: boolean; onStartNew: () => void }) {
@@ -111,7 +117,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
 
   useEffect(() => {
     let alive = true;
-    openSession(data.task.id, { fresh: startFresh }).then((snap) => {
+    openSession(data.task.id, { fresh: startFresh, annotatorEmail: nav.annotatorEmail }).then((snap) => {
       if (!alive || !snap) return;
       setSessionId(snap.sessionId);
       // Seed the sync refs to the restored state so we don't echo it back.
@@ -383,6 +389,83 @@ function AutogenPanel({ result, onClose }: { result: AutogenResult; onClose: () 
   );
 }
 
+function QaPanel({ onClose, reviewer }: { onClose: () => void; reviewer: string }) {
+  const [tasks, setTasks] = useState<QaTaskRow[] | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [subs, setSubs] = useState<QaSubmission[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const reload = () => fetchQaTasks().then(setTasks);
+  useEffect(() => { void reload(); }, []);
+  const openTask = async (id: string) => { setSelected(id); setSubs(null); const r = await fetchQaSubmissions(id); setSubs(r?.submissions ?? []); };
+  const accept = async (sessionId: string) => {
+    if (!selected) return;
+    setBusy(true);
+    await adjudicate(selected, sessionId, reviewer);
+    await openTask(selected);
+    await reload();
+    setBusy(false);
+  };
+  const badge = (row: QaTaskRow) => {
+    if (row.adjudicated) return { txt: "adjudicated", bg: t.greenLite, fg: t.greenDark };
+    if (row.disputed) return { txt: `disputed · ${Math.round((row.agreement ?? 0) * 100)}%`, bg: t.redLite, fg: t.redDark };
+    return { txt: "unanimous", bg: t.surfaceTint, fg: t.n2 };
+  };
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(13,13,13,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 55 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 840, height: "78vh", background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ padding: "18px 22px 14px", borderBottom: `1px solid ${t.n7}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <div style={{ fontSize: "1rem", fontWeight: weight.bold, color: t.n0 }}>⚖ Multi-annotator QA</div>
+            <div style={{ marginTop: 3, fontSize: "0.8rem", color: t.n2 }}>Agreement across annotators; accept one submission as the golden. Reviewing as <span style={{ fontFamily: t.fontMono, fontSize: "0.74rem" }}>{reviewer}</span>.</div>
+          </div>
+          <span onClick={onClose} style={{ cursor: "pointer", color: t.n3, display: "inline-flex" }}><Icon name="close" size={18} /></span>
+        </div>
+        <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+          <div style={{ width: 320, borderRight: `1px solid ${t.n7}`, overflowY: "auto" }}>
+            {tasks == null ? (
+              <div style={{ padding: 24, color: t.n3, fontSize: "0.85rem" }}>Loading…</div>
+            ) : tasks.length === 0 ? (
+              <div style={{ padding: 24, color: t.n3, fontSize: "0.85rem" }}>No submissions yet. Submit a task as a couple of annotators (change the identity in the header) to see agreement here.</div>
+            ) : tasks.map((row) => {
+              const b = badge(row);
+              return (
+                <div key={row.taskExternalId} onClick={() => openTask(row.taskExternalId)} style={{ padding: "11px 18px", cursor: "pointer", borderBottom: `1px solid ${t.n8}`, background: selected === row.taskExternalId ? t.surfaceTint : "transparent" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontFamily: t.fontMono, fontSize: "0.76rem", color: t.n1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.taskExternalId}</span>
+                    <span style={{ fontSize: "0.64rem", fontWeight: weight.bold, padding: "2px 7px", borderRadius: 5, background: b.bg, color: b.fg, whiteSpace: "nowrap" }}>{b.txt}</span>
+                  </div>
+                  <div style={{ marginTop: 3, fontSize: "0.72rem", color: t.n3 }}>{row.submissions} submissions · {row.annotators} annotators · majority reward {row.majorityReward}</div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
+            {selected == null ? (
+              <div style={{ padding: 28, color: t.n3, fontSize: "0.85rem", textAlign: "center" }}>Select a task to see each annotator's submission.</div>
+            ) : subs == null ? (
+              <div style={{ padding: 24, color: t.n3, fontSize: "0.85rem" }}>Loading submissions…</div>
+            ) : subs.map((s) => (
+              <div key={s.sessionId} style={{ padding: "12px 22px", borderBottom: `1px solid ${t.n8}`, display: "flex", alignItems: "center", gap: 12 }}>
+                <span style={{ width: 30, height: 30, borderRadius: t.radiusFull, background: t.primary7, color: t.n9, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "0.78rem", fontWeight: weight.bold, flexShrink: 0 }}>{s.annotator.charAt(0).toUpperCase()}</span>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: "0.82rem", color: t.n1, fontFamily: t.fontMono }}>{s.annotator}</div>
+                  <div style={{ fontSize: "0.72rem", color: t.n3, marginTop: 1 }}>{s.kind}{s.override ? " · overridden" : ""} · {new Date(s.at).toLocaleString()}</div>
+                </div>
+                <span style={{ fontFamily: t.fontMono, fontSize: "0.78rem", fontWeight: weight.bold, padding: "3px 10px", borderRadius: 6, background: s.reward === 1 ? t.greenLite : t.redLite, color: s.reward === 1 ? t.greenDark : t.redDark }}>reward {s.reward}</span>
+                {s.accepted ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: "0.72rem", fontWeight: weight.bold, color: t.greenDark }}><Icon name="check" size={14} stroke={2.4} color={t.greenDark} /> accepted</span>
+                ) : (
+                  <span onClick={busy ? undefined : () => accept(s.sessionId)} style={{ fontSize: "0.72rem", fontWeight: weight.semibold, color: busy ? t.n4 : t.primary6, cursor: busy ? "default" : "pointer", padding: "5px 11px", border: `1px solid ${t.n6}`, borderRadius: t.radiusLg, whiteSpace: "nowrap" }}>Accept as golden</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GymPicker({ onClose, onPick }: { onClose: () => void; onPick: (id: string) => void }) {
   const [all, setAll] = useState<string[] | null>(null);
   const [connected, setConnected] = useState<boolean | null>(null);
@@ -462,6 +545,8 @@ export function TaskReview() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [gymError, setGymError] = useState<string | null>(null);
   const [freshNonce, setFreshNonce] = useState(0); // >0 forces a new session on remount ("New annotation")
+  const [qaOpen, setQaOpen] = useState(false);
+  const [annotatorEmail, setAnnotatorEmail] = useState(() => localStorage.getItem("annotatorEmail") || "annotator@deccan.ai");
 
   useEffect(() => {
     let alive = true;
@@ -506,13 +591,16 @@ export function TaskReview() {
     onBrowseGym: () => setPickerOpen(true),
     gymTaskId: gymData?.task.id ?? null,
     onExitGym: () => setGymData(null),
+    onOpenQa: () => setQaOpen(true),
+    annotatorEmail,
+    onSetAnnotator: (email) => { setAnnotatorEmail(email); localStorage.setItem("annotatorEmail", email); },
   };
 
   return (
     <>
       {effective ? (
         <ReviewScreen
-          key={`${gymData ? `gym:${gymData.task.id}` : taskId}#${freshNonce}`}
+          key={`${gymData ? `gym:${gymData.task.id}` : taskId}#${freshNonce}#${annotatorEmail}`}
           data={effective}
           nav={nav}
           startFresh={freshNonce > 0}
@@ -522,6 +610,7 @@ export function TaskReview() {
         <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: t.n3, fontFamily: t.fontPrimary }}>Loading task…</div>
       )}
       {pickerOpen && <GymPicker onClose={() => setPickerOpen(false)} onPick={loadGym} />}
+      {qaOpen && <QaPanel onClose={() => setQaOpen(false)} reviewer={annotatorEmail} />}
       {gymLoading && <GymLoading taskId={gymLoading} phase={gymPhase} />}
       {gymError && (
         <div onClick={() => setGymError(null)} style={{ position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", background: t.redLite, color: t.redDark, border: `1px solid color-mix(in srgb, ${t.red} 42%, ${t.n9})`, padding: "10px 16px", borderRadius: t.radiusLg, fontSize: "0.84rem", fontWeight: weight.semibold, zIndex: 70, cursor: "pointer", fontFamily: t.fontPrimary }}>

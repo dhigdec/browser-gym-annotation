@@ -115,9 +115,49 @@ async function send(url: string, method: "PATCH" | "PUT", body: unknown): Promis
 }
 
 /** Resume (or create) this annotator's session for a task. `fresh` forces a new
- *  session — used to re-annotate a task whose latest session is submitted. */
-export function openSession(taskId: string, opts?: { fresh?: boolean }): Promise<SessionSnapshot | null> {
-  return post<SessionSnapshot>(`/api/tasks/${encodeURIComponent(taskId)}/sessions`, { fresh: opts?.fresh ?? false });
+ *  session; `annotatorEmail` scopes it to a specific annotator (multi-annotator QA). */
+export function openSession(taskId: string, opts?: { fresh?: boolean; annotatorEmail?: string }): Promise<SessionSnapshot | null> {
+  return post<SessionSnapshot>(`/api/tasks/${encodeURIComponent(taskId)}/sessions`, {
+    fresh: opts?.fresh ?? false,
+    annotatorEmail: opts?.annotatorEmail,
+  });
+}
+
+// ---- multi-annotator QA ----------------------------------------------------
+
+export interface QaTaskRow {
+  taskExternalId: string; title: string; submissions: number; annotators: number;
+  adjudicated: boolean; agreement: number | null; majorityReward: number | null;
+  unanimous: boolean; disputed: boolean; distribution: Record<string, number>;
+}
+export interface QaSubmission {
+  sessionId: string; annotator: string; reward: number; kind: string;
+  override: boolean; overrideReason: string | null; accepted: boolean; at: string;
+}
+
+export async function fetchQaTasks(): Promise<QaTaskRow[]> {
+  try {
+    const res = await fetch("/api/qa/tasks");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return ((await res.json()) as { tasks: QaTaskRow[] }).tasks;
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchQaSubmissions(taskId: string): Promise<{ title: string; agreement: QaTaskRow; submissions: QaSubmission[] } | null> {
+  try {
+    const res = await fetch(`/api/qa/tasks/${encodeURIComponent(taskId)}/submissions`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function adjudicate(taskId: string, sessionId: string, reviewer: string, note = ""): Promise<boolean> {
+  const out = await post<{ accepted: string }>(`/api/qa/tasks/${encodeURIComponent(taskId)}/adjudicate`, { sessionId, reviewer, note });
+  return !!out;
 }
 
 export function patchSession(

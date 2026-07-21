@@ -171,6 +171,7 @@ class Submission(Base):
     kind: Mapped[str] = mapped_column(String(16), default="golden")  # golden | breaker
     submitted_with_override: Mapped[bool] = mapped_column(Boolean, default=False)
     override_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    accepted: Mapped[bool] = mapped_column(Boolean, default=False)  # a reviewer adjudicated this the accepted golden (QA)
     created_at: Mapped[datetime] = mapped_column(default=func.now())
 
     session: Mapped[ReviewSession] = relationship(back_populates="submissions")

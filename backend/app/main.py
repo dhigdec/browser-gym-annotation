@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 from app import models  # noqa: F401 — register ORM models on Base
 from app.api.gym import router as gym_router
+from app.api.qa import router as qa_router
 from app.api.sessions import router as sessions_router
 from app.api.tasks import router as tasks_router
 from app.config import settings
@@ -62,3 +63,4 @@ def health() -> dict:
 app.include_router(tasks_router)
 app.include_router(sessions_router)
 app.include_router(gym_router)
+app.include_router(qa_router)
