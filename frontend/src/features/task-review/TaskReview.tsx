@@ -14,6 +14,7 @@ import {
   saveSuite,
   submitSession,
 } from "../../lib/api";
+import { parseStateEdits } from "../../lib/gymEdits";
 import type { ReviewData, Step, TaskListItem, Verifier } from "../../lib/types";
 import {
   isResolved,
@@ -247,12 +248,14 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
                 // milestone verdict — not a canned tail. (Fixture tasks below use
                 // the deterministic/agent branch.)
                 if (data.source === "gym" && data.gymResume) {
+                  const edits = parseStateEdits(text); // `path = value` lines → real state edits
                   const res = await resumeGymReview({
                     taskId: data.task.id,
                     seed: data.gymResume.seed,
                     worldState: data.gymResume.worldState,
                     urlTrail: data.gymResume.urlTrail,
                     finalUrl: data.gymResume.finalUrl,
+                    edits: Object.keys(edits).length ? edits : undefined,
                   });
                   if (res) dispatch({ t: "gymResumed", reward: res.reward });
                   return;

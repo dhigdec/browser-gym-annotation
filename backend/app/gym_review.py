@@ -122,7 +122,7 @@ def to_review(run: dict, task_id: str, agent: str) -> dict:
         },
         "tabs": [tab],
         "steps": steps,
-        "correctionSeed": "Describe the corrected action; the agent re-runs from this state.",
+        "correctionSeed": "Correct the outcome, then re-verify in the live gym. Optional state edits, one per line — e.g.  shop.orders.ORD_1.payment_id = pm_personal  (or  shop.orders = {}  to void it).",
         "correctedTail": [],
         "verifiers": verifiers,
         "gymReward": reward,
