@@ -281,11 +281,30 @@ def _autogen_verifiers_job(task_id: str, seed: int, iterations: int) -> dict:
             fails = [k for k, r in gate["golden"]["results"].items() if r == "fail"]
             fb.append(f"The suite scored 0 on the GOLDEN (solved) world but must score 1 — these checks wrongly failed on the solved world: {fails}. Correct their paths/values.")
         feedback = " ".join(fb)
+
+    # NEGATIVE-CONSTRAINT policies (JP's design): propose from the brief + the
+    # oracle trajectory, keep only those the CORRECT (oracle) run actually OBEYS.
+    steps = (run.get("trajectory") or {}).get("steps", [])
+    golden_trace = [
+        {"idx": s.get("step_idx"), "type": s.get("action_kind"), "tabId": s.get("active_tab"),
+         "description": s.get("reasoning") or f"{s.get('action_kind')} {s.get('action_args')}"}
+        for s in steps
+    ]
+    policy_checks = []
+    for i, pol in enumerate(agent.generate_trace_policies(brief, [{"action": s.get("action_kind"), "args": s.get("action_args")} for s in steps])):
+        if agent.judge_trajectory(pol, golden_trace) is True:  # the oracle must obey it
+            policy_checks.append({
+                "id": f"p{i + 1}", "level": "safety", "assertion": pol,
+                "code": f"policy: {pol}", "check": {"kind": "trace_policy", "policy": pol},
+            })
+
     return {
         "oracle": bool(gate and gate.get("oracle")),
         "iterations": len(history),
         "brief": brief,
-        "suite": suite or [],
+        "suite": (suite or []) + policy_checks,
+        "stateChecks": len(suite or []),
+        "policyChecks": len(policy_checks),
         "gate": gate,
         "history": history,
     }

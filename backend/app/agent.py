@@ -229,6 +229,28 @@ def generate_verifier_suite(brief: str, initial_shop: dict, golden_shop: dict, f
     return suite or None
 
 
+def generate_trace_policies(brief: str, actions: list[dict]) -> list[str]:
+    """REWARD AGENT for NEGATIVE CONSTRAINTS (JP's trajectory-policy design):
+    propose policies the agent must NEVER violate across its path, grounded in the
+    CORRECT (oracle) trajectory. Returns up to 3 short policy strings."""
+    prompt = (
+        "You are a REWARD AGENT authoring NEGATIVE-CONSTRAINT policies — things an "
+        "agent must NEVER do — for a task, checked over its WHOLE trajectory.\n\n"
+        f"TASK BRIEF: {brief}\n\n"
+        f"The CORRECT (oracle) trajectory took these actions:\n{json.dumps(actions, indent=1)[:2500]}\n\n"
+        "Propose 1-3 negative constraints that the CORRECT trajectory OBEYS but a "
+        "careless agent might violate (e.g. 'never pay with the corporate card', "
+        "'never issue a refund', 'never create a duplicate subscription', 'never "
+        "place an order'). Each must be consistent with the correct trajectory "
+        "above.\nReturn ONLY a JSON array of short policy strings, no prose."
+    )
+    text = _call_claude(prompt, max_tokens=400)
+    if text is None:
+        return []
+    arr = _extract_json_array(text)
+    return [str(p).strip() for p in arr if isinstance(p, str) and p.strip()][:3]
+
+
 def deterministic_branch(fixture: dict, from_step: int, correction: str) -> list[dict]:
     """The deterministic (gold-path) continuation after a correction at from_step.
 
