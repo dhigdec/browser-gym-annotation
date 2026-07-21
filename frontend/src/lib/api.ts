@@ -202,6 +202,39 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export interface ResumeResult { score: number; success: boolean; reward: number }
 
+export interface AutogenResult {
+  oracle: boolean;
+  stateChecks: number;
+  policyChecks: number;
+  iterations: number;
+  brief: string;
+  suite: { id: string; level: string; assertion: string; check: Record<string, unknown> }[];
+  gate?: { initialReward: number; goldenReward: number };
+}
+
+/** Run the autonomous reward-agent oracle loop for a gym task (auto-generate +
+ *  oracle-validate a verifier suite). Async job; polls to the result. */
+export async function autogenVerifiers(
+  taskId: string,
+  seed = 0,
+  opts?: { onStatus?: (s: GymJob["status"]) => void },
+): Promise<AutogenResult | null> {
+  const out = await post<{ jobId: string }>("/api/gym/autogen-verifiers", { taskId, seed, iterations: 5 });
+  const jobId = out?.jobId;
+  if (!jobId) return null;
+  const deadline = Date.now() + 320_000;
+  let last: GymJob["status"] | null = null;
+  while (Date.now() < deadline) {
+    await sleep(2000);
+    const j = await pollGymJob(jobId);
+    if (!j) continue;
+    if (j.status !== last) { last = j.status; opts?.onStatus?.(j.status); }
+    if (j.status === "done") return (j.review as unknown as AutogenResult) ?? null;
+    if (j.status === "error") return null;
+  }
+  return null;
+}
+
 /** Drive-forward resume (async): load the corrected world (+ edits) and drive a
  *  LIVE agent FORWARD from the mid-episode URL in the gym, then verify. Slow +
  *  (for LLM agents) stochastic. Submits to the job queue and polls to the driven

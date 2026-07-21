@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { Icon, t, weight } from "../../ds";
 import {
+  autogenVerifiers,
   driveForwardGym,
   fetchGymStatus,
   fetchGymTasks,
@@ -16,6 +17,7 @@ import {
   submitSession,
 } from "../../lib/api";
 import { parseStateEdits } from "../../lib/gymEdits";
+import type { AutogenResult } from "../../lib/api";
 import type { ReviewData, Step, TaskListItem, Verifier } from "../../lib/types";
 import {
   isResolved,
@@ -91,6 +93,8 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [promptOverride, setPromptOverride] = useState<string | null>(null);
   const [driving, setDriving] = useState<null | "queued" | "running">(null);
+  const [autogen, setAutogen] = useState<null | "queued" | "running">(null);
+  const [autogenResult, setAutogenResult] = useState<AutogenResult | null>(null);
 
   useEffect(() => {
     if (!state.playing) return;
@@ -307,7 +311,22 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
       </div>
 
       <div style={{ padding: "8px 16px 24px" }}>
-        <SectionHeader n={2} title="Build the verifier suite" subtitle="Generate multi-level verifiers, edit them, then run the benchmark. Reward = 1 requires every verifier to pass." done={state.submitted} />
+        <SectionHeader n={2} title="Build the verifier suite" subtitle="Generate multi-level verifiers, edit them, then run the benchmark. Reward = 1 requires every verifier to pass." done={state.submitted} right={
+          data.source === "gym" ? (
+            <span
+              onClick={autogen ? undefined : async () => {
+                setAutogenResult(null);
+                setAutogen("queued");
+                const res = await autogenVerifiers(data.task.id, 0, { onStatus: (s) => setAutogen(s === "done" || s === "error" ? null : s) });
+                setAutogen(null);
+                setAutogenResult(res);
+              }}
+              title="Autonomous reward agent: generate a verifier suite and validate it with the oracle gate (0 on initial, 1 on golden)"
+              style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, background: t.n9, color: autogen ? t.n3 : t.primary6, fontSize: "0.75rem", fontWeight: weight.semibold, cursor: autogen ? "default" : "pointer", whiteSpace: "nowrap" }}>
+              {autogen ? (autogen === "queued" ? "Reward agent queued…" : "Generating + validating…") : "🤖 Auto-generate verifiers"}
+            </span>
+          ) : undefined
+        } />
         <VerifierSuite
           state={state}
           onGenerate={() => dispatch({ t: "generate" })}
@@ -320,7 +339,47 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
         />
       </div>
 
+      {autogenResult && <AutogenPanel result={autogenResult} onClose={() => setAutogenResult(null)} />}
     </Frame>
+  );
+}
+
+function AutogenPanel({ result, onClose }: { result: AutogenResult; onClose: () => void }) {
+  const ok = result.oracle;
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(13,13,13,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 55 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 660, maxHeight: "80vh", background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ padding: "18px 20px 14px", borderBottom: `1px solid ${t.n7}` }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: "1rem", fontWeight: weight.bold, color: t.n0 }}>🤖 Reward agent — generated verifier suite</span>
+            <span onClick={onClose} style={{ cursor: "pointer", color: t.n3, display: "inline-flex" }}><Icon name="close" size={18} /></span>
+          </div>
+          <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ padding: "3px 9px", borderRadius: 6, fontSize: "0.72rem", fontWeight: weight.bold, background: ok ? t.greenLite : t.redLite, color: ok ? t.greenDark : t.redDark }}>
+              {ok ? "✓ Oracle-valid (0 on initial · 1 on golden)" : "Not oracle-valid"}
+            </span>
+            <span style={{ fontSize: "0.75rem", color: t.n2 }}>
+              {result.stateChecks} state · {result.policyChecks} policy · {result.iterations} iteration{result.iterations === 1 ? "" : "s"}
+              {result.gate ? ` · gate ${result.gate.initialReward}/${result.gate.goldenReward}` : ""}
+            </span>
+          </div>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
+          {result.suite.map((v) => {
+            const isPolicy = (v.check as { kind?: string }).kind === "trace_policy";
+            return (
+              <div key={v.id} style={{ padding: "9px 20px", borderBottom: `1px solid ${t.n8}`, display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <span style={{ marginTop: 1, padding: "2px 7px", borderRadius: 5, fontSize: "0.64rem", fontWeight: weight.bold, textTransform: "uppercase", background: isPolicy ? "color-mix(in srgb, #a855f7 15%, transparent)" : t.surfaceTint, color: isPolicy ? "#7c3aed" : t.n2, whiteSpace: "nowrap" }}>{isPolicy ? "policy" : v.level}</span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: "0.83rem", color: t.n1 }}>{v.assertion}</div>
+                  <div style={{ marginTop: 2, fontFamily: t.fontMono, fontSize: "0.7rem", color: t.n3, wordBreak: "break-word" }}>{JSON.stringify(v.check)}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
   );
 }
 
