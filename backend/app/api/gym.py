@@ -18,6 +18,12 @@ class VerifyBody(BaseModel):
     step: int = 0
 
 
+class RunBody(BaseModel):
+    taskId: str
+    agent: str = "oracle"
+    seed: int = 0
+
+
 @router.get("/status")
 def status() -> dict:
     return {"connected": gym_client.available(), "url": settings.gym_url}
@@ -46,3 +52,13 @@ def gym_verify(body: VerifyBody) -> dict:
     if v is None:
         raise HTTPException(status_code=502, detail="gym unreachable or no active episode")
     return {"snapshot": gym_client.snapshot(), "verdict": v}
+
+
+@router.post("/run")
+def gym_run(body: RunBody) -> dict:
+    """M6c phase 2 — the full triggerable loop: run a real agent against the
+    live gym, then read the true milestone verdict + world snapshot."""
+    r = gym_client.run_agent(body.taskId, body.agent, body.seed)
+    if r is None:
+        raise HTTPException(status_code=502, detail="gym unreachable or run failed")
+    return {"run": r, "verdict": gym_client.verify(0), "snapshot": gym_client.snapshot()}

@@ -24,3 +24,8 @@ def test_verify_502_when_gym_down(client, monkeypatch):
     monkeypatch.setattr("app.gym_client.settings.gym_url", _DOWN)
     assert client.post("/api/gym/verify", json={"step": 0}).status_code == 502
     assert client.get("/api/gym/tasks").status_code == 502
+
+
+def test_run_502_when_gym_down(client, monkeypatch):
+    monkeypatch.setattr("app.gym_client.settings.gym_url", _DOWN)
+    assert client.post("/api/gym/run", json={"taskId": "A1/x"}).status_code == 502

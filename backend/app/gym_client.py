@@ -15,7 +15,7 @@ import urllib.request
 from app.config import settings
 
 
-def _req(method: str, path: str, body: dict | None = None) -> dict | None:
+def _req(method: str, path: str, body: dict | None = None, timeout: int = 20) -> dict | None:
     url = settings.gym_url.rstrip("/") + path
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
@@ -25,7 +25,7 @@ def _req(method: str, path: str, body: dict | None = None) -> dict | None:
         headers={"content-type": "application/json", "X-Harness-Token": settings.gym_harness_token},
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
     except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
         return None
@@ -50,6 +50,12 @@ def world() -> dict | None:
 
 def verify(step: int = 0) -> dict | None:
     return _req("POST", "/_harness/verify", {"step": step})
+
+
+def run_agent(task_id: str, agent: str = "oracle", seed: int = 0) -> dict | None:
+    """Trigger a full agent run in the gym (reset → drive → verify). Slow — the
+    gym drives a real browser — so allow a generous timeout."""
+    return _req("POST", "/_harness/run_agent", {"agent": agent, "task_id": task_id, "seed": seed}, timeout=260)
 
 
 def available() -> bool:
