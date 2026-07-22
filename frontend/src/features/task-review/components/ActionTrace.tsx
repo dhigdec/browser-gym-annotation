@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Icon, t, weight, ACTION_COLOR } from "../../../ds";
 import type { Step, Tab } from "../../../lib/types";
 import type { StepStatus } from "../../../lib/reviewMachine";
@@ -63,9 +64,22 @@ export function ActionTrace({
   const reviewedAll = verifiedThrough >= steps.length;
   const forkAt = rerunFrom == null ? -1 : steps.findIndex((s) => s.idx > rerunFrom);
 
+  // Keep the trace in lock-step with the playhead: whenever the current step
+  // changes (transport, step card, verify, tick), scroll the CURRENT row into
+  // view — but only the trace's own scroll box, never the outer page.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const body = bodyRef.current, row = rowRef.current;
+    if (!body || !row) return;
+    const br = body.getBoundingClientRect(), rr = row.getBoundingClientRect();
+    if (rr.top < br.top) body.scrollTop += rr.top - br.top - 8;
+    else if (rr.bottom > br.bottom) body.scrollTop += rr.bottom - br.bottom + 8;
+  }, [current, steps.length]);
+
   return (
-    <div style={{ height: 132, flexShrink: 0, background: t.n9, border: `1px solid ${t.n7}`, borderRadius: t.radiusXl, boxShadow: t.shadowMd, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", borderBottom: `1px solid ${t.n7}`, flexShrink: 0 }}>
+    <div style={{ flexShrink: 0, background: t.n9, border: `1px solid ${t.n7}`, borderRadius: t.radiusXl, boxShadow: t.shadowMd, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 18px", borderBottom: `1px solid ${t.n7}`, flexShrink: 0 }}>
         <span style={{ fontSize: "0.8125rem", fontWeight: weight.bold, color: t.n1 }}>Action trace</span>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ fontFamily: t.fontMono, fontSize: "0.719rem", fontWeight: weight.bold, color: t.greenDark }}>
@@ -83,37 +97,38 @@ export function ActionTrace({
         </div>
       </div>
 
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+      <div ref={bodyRef} style={{ position: "relative", maxHeight: 360, minHeight: 132, overflowY: "auto", overscrollBehavior: "contain" }}>
         {steps.map((s, i) => {
           const selected = i === current;
           const variant = statusOf(s, verifiedThrough, rerunFrom);
           return (
             <div key={s.idx}>
               {i === forkAt && (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 16px", background: `color-mix(in srgb, ${pink} 6%, ${t.n9})` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 18px", background: `color-mix(in srgb, ${pink} 6%, ${t.n9})` }}>
                   <Icon name="branch" size={13} color={pink} />
                   <span style={{ fontSize: "0.72rem", fontWeight: weight.bold, color: pink }}>Re-ran from step {rerunFrom} — correction applied{modeLabel}</span>
                 </div>
               )}
               <div
+                ref={selected ? rowRef : undefined}
                 onClick={() => onStepTo(i)}
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  gap: 10,
-                  padding: "9px 16px",
+                  gap: 11,
+                  padding: "12px 18px",
                   cursor: "pointer",
                   background: selected ? t.surfaceTint : "transparent",
-                  borderLeft: `2px solid ${selected ? t.primary6 : "transparent"}`,
+                  borderLeft: `3px solid ${selected ? t.primary6 : "transparent"}`,
                   transition: t.transitionUi,
                 }}
               >
-                <span style={{ fontFamily: t.fontMono, fontSize: "0.719rem", color: t.n3, width: 22, flexShrink: 0 }}>{String(s.idx).padStart(2, "0")}</span>
+                <span style={{ fontFamily: t.fontMono, fontSize: "0.75rem", color: selected ? t.primary6 : t.n3, fontWeight: selected ? weight.bold : weight.regular, width: 24, flexShrink: 0 }}>{String(s.idx).padStart(2, "0")}</span>
                 <StatusCircle variant={variant} />
                 <span style={{ width: 8, height: 8, borderRadius: t.radiusFull, background: ACTION_COLOR[s.type], flexShrink: 0 }} />
-                <span style={{ fontSize: "0.625rem", fontWeight: weight.bold, letterSpacing: "0.04em", textTransform: "uppercase", color: ACTION_COLOR[s.type], width: 64, flexShrink: 0 }}>{s.type}</span>
+                <span style={{ fontSize: "0.65rem", fontWeight: weight.bold, letterSpacing: "0.04em", textTransform: "uppercase", color: ACTION_COLOR[s.type], width: 68, flexShrink: 0 }}>{s.type}</span>
                 <span style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: "0.8125rem", color: t.n1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.description}</span>
+                  <span style={{ fontSize: "0.84rem", color: t.n0, fontWeight: selected ? weight.semibold : weight.regular, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.description}</span>
                   {variant === "rerun" && (
                     <span style={{ flexShrink: 0, fontSize: "0.594rem", fontWeight: weight.bold, textTransform: "uppercase", letterSpacing: "0.04em", color: pink, background: `color-mix(in srgb, ${pink} 12%, transparent)`, padding: "2px 6px", borderRadius: t.radiusSm }}>re-run</span>
                   )}
