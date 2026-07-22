@@ -65,6 +65,8 @@ export type Action =
       added?: Verifier[];
       edits?: Record<string, { assertion: string; code: string }>;
       overrides?: Record<string, boolean>;
+      // The frozen submission (authoritative reward/kind, incl. 'flagged').
+      submission?: { reward: number; kind: string } | null;
     };
 
 export type PersistStatus =
@@ -179,10 +181,13 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
         verifiersGenerated: ["verifiers_generated", "benchmark_run", "submitted"].includes(a.status),
         benchmarkRun: ["benchmark_run", "submitted"].includes(a.status),
         submitted: a.status === "submitted",
-        // Restore the granular review progress from the DB (everything once the
-        // steps were approved). With branchTail restored, vs.length equals the
-        // count reviewed_through was written against, so they can't disagree.
-        verifiedThrough: Math.max(s.verifiedThrough, a.reviewedThrough, approved ? vs.length : 0),
+        // Restore the FROZEN submission verdict so a reopened submitted session
+        // shows the authoritative reward/kind (incl. 'flagged'), not a re-derivation.
+        serverSubmission: a.submission ?? s.serverSubmission,
+        // Restore the granular review progress from the DB, CLAMPED to the visible
+        // length so a stale reviewed_through (e.g. a fork restored onto a shorter
+        // fresh run) can never show "Reviewed N/total" with N > total.
+        verifiedThrough: Math.min(vs.length, Math.max(s.verifiedThrough, a.reviewedThrough, approved ? vs.length : 0)),
         // Always open at step 1 (never re-park on the error step).
         step: 0,
         activeTabId: vs[0]?.tabId ?? s.activeTabId,

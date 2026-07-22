@@ -438,7 +438,9 @@ def patch_session(session_id: UUID, body: PatchSessionBody, db: Session = Depend
             s.status = body.status
             _audit(db, "", "session.status", str(s.id), {"status": body.status}, session_id=s.id)
     if body.rerunFrom is not None:
-        nsteps = len(_session_fixture(db, s).get("steps", []))
+        # Gym sessions have no baked fixture (nsteps would be 0), and the correction
+        # step is relative to a LIVE run — use a lenient bound, like reviewedThrough.
+        nsteps = 10000 if s.source == "gym" else len(_session_fixture(db, s).get("steps", []))
         if not 0 <= body.rerunFrom <= nsteps:
             raise HTTPException(status_code=422, detail=f"rerunFrom {body.rerunFrom} out of range 0..{nsteps}")
         s.rerun_from = body.rerunFrom

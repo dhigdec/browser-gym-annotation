@@ -177,6 +177,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
         added,
         edits,
         overrides,
+        submission: snap.submission ? { reward: snap.submission.reward, kind: snap.submission.kind } : null,
       };
       const restored = reducer(makeInitialState(data), hydrateAction);
       // Seed the sync refs to the RESTORED state so we don't echo it back.
@@ -842,16 +843,18 @@ export function TaskReview() {
     queueSet,
     onToggleQueue: () => { setGymData(null); setQueueSet((q) => (q === "breakers" ? "fixtures" : "breakers")); },
     // Prompt edit → re-drive the WHOLE run from the initial state under the new
-    // brief (a live gpt-5.1 run), then remount a FRESH review of that new run.
-    onPromptRerun: currentTask?.source === "gym" ? async (prompt: string) => {
+    // brief (a live gpt-5.5 run), then remount a FRESH review of that new run.
+    // Re-drives the DISPLAYED task (an off-queue picker task, else the queue task)
+    // — defined whenever a gym task is on screen, not only when the queue task is gym.
+    onPromptRerun: (gymData || currentTask?.source === "gym") ? async (prompt: string) => {
+      const rid = gymData?.task.id ?? taskId; // the task actually shown, not always the queue task
       setGymError(null);
-      setGymAdhoc(false);
       setGymPhase("queued");
-      setGymLoading(taskId);
-      const rv = await runGymReview(taskId, "openai", 0, { onStatus: setGymPhase, brief: prompt });
+      setGymLoading(rid);
+      const rv = await runGymReview(rid, "openai", 0, { onStatus: setGymPhase, brief: prompt });
       setGymLoading(null);
       if (rv) { setGymData(rv); setFreshNonce((n) => n + 1); } // new trajectory + fresh session
-      else setGymError(taskId);
+      else setGymError(rid);
     } : undefined,
   };
 

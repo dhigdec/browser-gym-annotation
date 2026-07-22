@@ -275,11 +275,11 @@ def _resume_run_job(task_id: str, seed: int, state: dict, url: str, step, agent:
     if r is None:
         raise jobs.JobFailure("gym unreachable, task not found, or resume-run failed")
     if not (r.get("trajectory") or {}).get("steps"):
-        reason = (
-            "no ANTHROPIC_API_KEY configured"
-            if not settings.anthropic_api_key.strip()
-            else "the observing agent produced no steps (it may be rate-limited or unavailable)"
-        )
+        # Name the credential for the ACTUAL agent (openai drive-forward needs the
+        # OpenAI key, not Anthropic); the gym holds the keys, so default to the
+        # generic reason unless the annotator's own key is the gap.
+        missing = "OPENAI_API_KEY" if agent.startswith("openai") else "ANTHROPIC_API_KEY"
+        reason = f"the {missing.split('_')[0].lower()} agent produced no steps (it may be rate-limited, unavailable, or missing {missing})"
         raise jobs.JobFailure(f"resume run produced no trajectory — {reason}")
     review = gym_review.to_review(r, task_id, agent)
     review["backendState"] = gym_client.state()
