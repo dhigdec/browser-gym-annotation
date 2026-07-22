@@ -36,10 +36,11 @@ def _gym_job(fn):
     return inner
 
 
-def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review: dict) -> str:
+def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review: dict, brief: str | None = None) -> str:
     """Persist a real gym review as a proper FK-linked record: task (+ seed
     state) → session → trajectory (+ steps) + verifier suite (+ milestones) +
-    benchmark run. Returns the session id."""
+    benchmark run. Returns the session id. `brief` set = this run used an annotator
+    PROMPT OVERRIDE, so its brief must NOT become the canonical task prompt."""
     t = run.get("trajectory") or {}
     vr = t.get("verifier_result") or {}
     seed = int(run.get("seed", 0))
@@ -50,9 +51,12 @@ def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review
         db.add(task)
     task.source = "gym"
     task.title = task.title or review["task"]["title"]
-    # Fill the CANONICAL prompt once (first review); never clobber it — a per-run
-    # annotator prompt edit (brief override) must not rewrite the shared task def.
-    task.prompt = task.prompt or review["task"]["prompt"]
+    # Fill the CANONICAL prompt from an ORIGINAL run only — never from an annotator
+    # brief override (even on the task's FIRST review, when task.prompt is still
+    # empty), and never clobber an already-set value. A per-run prompt edit must
+    # not rewrite the shared task definition every future reviewer reads.
+    if not brief:
+        task.prompt = task.prompt or review["task"]["prompt"]
     task.category = t.get("task_category") or ""
     task.difficulty = (t.get("task_difficulty") or "").lower()
     task.priority = review["task"]["priority"]
@@ -83,14 +87,24 @@ def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review
     traj = models.Trajectory(session_id=s.id, agent=agent, seed=seed, score=float(vr.get("score", 0.0) or 0.0), success=bool(vr.get("success")), source="gym")
     db.add(traj)
     db.flush()
-    for st in review["steps"]:
-        db.add(models.TrajectoryStep(trajectory_id=traj.id, idx=st["idx"], action_type=st["type"], description=st["description"], tab_id=st.get("tabId", ""), screenshot_url=st.get("image") or ""))
+    raw_steps = t.get("steps") or []  # 1:1 with review["steps"] (to_review enumerates them)
+    for i, st in enumerate(review["steps"]):
+        raw = raw_steps[i] if i < len(raw_steps) else {}
+        db.add(models.TrajectoryStep(
+            trajectory_id=traj.id, idx=st["idx"], action_type=st["type"],
+            description=st["description"], tab_id=st.get("tabId", ""),
+            screenshot_url=st.get("image") or "",
+            url_after=st.get("url") or "",           # the step's landing URL — schema has the column
+            reasoning=(raw.get("reasoning") or "").strip(),
+        ))
 
     suite = models.VerifierSuite(session_id=s.id, version=1)
     db.add(suite)
     db.flush()
     for v in review["verifiers"]:
-        db.add(models.Verifier(suite_id=suite.id, level=v["level"], assertion=v["assertion"], code=v["code"], gym_result=v.get("gymResult", "")))
+        # ext_id MUST equal the result-keying id (m0..mN) so benchmark_run.results
+        # maps 1:1 back to each verifier row (the human save_suite path sets it too).
+        db.add(models.Verifier(suite_id=suite.id, ext_id=v["id"], level=v["level"], assertion=v["assertion"], code=v["code"], gym_result=v.get("gymResult", "")))
     db.add(models.BenchmarkRun(suite_id=suite.id, reward=review.get("gymReward", 0), results={v["id"]: v.get("gymResult") for v in review["verifiers"]}))
     bs = review.get("backendState") or {}
     world_summary = {
@@ -182,7 +196,7 @@ def _run_review_job(task_id: str, agent: str, seed: int, brief: str | None = Non
     review.setdefault("gymResume", {})["worldState"] = gym_client.world()  # full multi-app world, for resume
     with SessionLocal() as db:
         try:
-            review["sessionId"] = _persist_gym_review(db, task_id, agent, r, review)
+            review["sessionId"] = _persist_gym_review(db, task_id, agent, r, review, brief=brief)
             review["persisted"] = True
         except Exception as exc:  # noqa: BLE001 — the review still loads, but say so honestly
             db.rollback()

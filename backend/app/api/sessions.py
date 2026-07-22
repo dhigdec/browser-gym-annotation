@@ -251,6 +251,7 @@ def _record_trajectory(db: Session, s: ReviewSession, fixture: dict) -> None:
                 description=st.get("description", ""),
                 tab_id=st.get("tabId", ""),
                 screenshot_url=st.get("image", "") or "",
+                url_after=st.get("url", "") or "",  # fill the column the schema defines
             )
         )
 
