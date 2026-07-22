@@ -116,6 +116,42 @@ def test_resume_run_is_async_and_pollable(client, monkeypatch):
     assert _poll(client, r.json()["jobId"])["status"] == "error"
 
 
+def test_async_unknown_task_reports_clean_not_found_no_route_leak(client, monkeypatch):
+    """D1: a gym 404 inside the async job must surface as a clean 'gym task not
+    found' — not a generic 'internal error' that leaks the internal /_harness route."""
+    def _raise(*a, **k):
+        raise gym_client.GymTaskNotFound("/_harness/run_agent")
+
+    monkeypatch.setattr("app.gym_client.run_agent", _raise)
+    r = client.post("/api/gym/tasks/A1/nope/run-review", json={"agent": "oracle", "seed": 0})
+    assert r.status_code == 200
+    jr = _poll(client, r.json()["jobId"])
+    assert jr["status"] == "error"
+    assert jr["error"] == "gym task not found"
+    assert "_harness" not in jr["error"]  # internal route no longer leaked
+
+
+def test_autogen_no_suite_message_is_honest_when_key_is_set(client, monkeypatch):
+    """D2: when a key IS configured but the reward agent yields no suite, the
+    diagnostic must not blame a missing key."""
+    monkeypatch.setattr("app.agent.settings.anthropic_api_key", "sk-present")
+    monkeypatch.setattr("app.gym_client.reset", lambda *a, **k: {"start_path": "/"})
+    monkeypatch.setattr("app.gym_client.world", lambda *a, **k: {"shop": {}})
+    monkeypatch.setattr(
+        "app.gym_client.run_agent",
+        lambda *a, **k: {"trajectory": {"steps": [{"step_idx": 0, "action_kind": "click", "action_args": {}, "active_tab": "shop", "reasoning": "x"}], "task_brief": "b"}},
+    )
+    monkeypatch.setattr("app.agent.generate_verifier_suite", lambda *a, **k: None)
+    monkeypatch.setattr("app.agent.generate_trace_policies", lambda *a, **k: [])
+    r = client.post("/api/gym/autogen-verifiers", json={"taskId": "A1/x", "seed": 0, "iterations": 1})
+    jr = _poll(client, r.json()["jobId"])
+    assert jr["status"] == "done"
+    err = jr["review"]["history"][0]["error"]
+    assert "needs API key" not in err          # the old misleading blame is gone
+    assert "no ANTHROPIC_API_KEY" not in err    # a key IS set → not the no-key branch
+    assert "rate-limited or unavailable" in err
+
+
 def test_job_store_runs_and_captures_outcomes():
     import time
 

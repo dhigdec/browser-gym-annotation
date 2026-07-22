@@ -1,6 +1,8 @@
 """Live gym endpoints (M6c/M8) — verify against the real world, and load real
 gym tasks into the review UI (persisting the run as a full DB record, M9)."""
 
+import functools
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -11,6 +13,20 @@ from app.config import settings
 from app.db import SessionLocal, get_db
 
 router = APIRouter(prefix="/api/gym", tags=["gym"])
+
+
+def _gym_job(fn):
+    """Wrap a background gym job so an unknown-task (GymTaskNotFound, raised by the
+    gym client on a 404) becomes a clean JobFailure — the SAME 'gym task not found'
+    a sync endpoint returns — instead of a generic 'internal error' that leaks the
+    internal /_harness route through the exception message."""
+    @functools.wraps(fn)
+    def inner(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except gym_client.GymTaskNotFound:
+            raise jobs.JobFailure("gym task not found") from None
+    return inner
 
 
 def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review: dict) -> str:
@@ -135,6 +151,7 @@ class RunReviewBody(BaseModel):
     seed: int = 0
 
 
+@_gym_job
 def _run_review_job(task_id: str, agent: str, seed: int) -> dict:
     """The slow work: run a real agent on a gym task, persist it as a full DB
     record (task + seed state → session → trajectory + milestones), and return
@@ -222,12 +239,18 @@ def gym_resume(body: ResumeBody) -> dict:
     }
 
 
+@_gym_job
 def _resume_run_job(task_id: str, seed: int, state: dict, url: str, step, agent: str) -> dict:
     r = gym_client.resume_run(task_id, seed, state, url, step, agent)
     if r is None:
         raise jobs.JobFailure("gym unreachable, task not found, or resume-run failed")
     if not (r.get("trajectory") or {}).get("steps"):
-        raise jobs.JobFailure("resume run produced no trajectory (agent may need an API key)")
+        reason = (
+            "no ANTHROPIC_API_KEY configured"
+            if not settings.anthropic_api_key.strip()
+            else "the observing agent produced no steps (it may be rate-limited or unavailable)"
+        )
+        raise jobs.JobFailure(f"resume run produced no trajectory — {reason}")
     review = gym_review.to_review(r, task_id, agent)
     review["backendState"] = gym_client.state()
     review.setdefault("gymResume", {})["worldState"] = gym_client.world()
@@ -277,6 +300,7 @@ def _gate_policies(brief: str, golden_trace: list[dict], actions: list[dict]) ->
     return out
 
 
+@_gym_job
 def _autogen_verifiers_job(task_id: str, seed: int, iterations: int) -> dict:
     """The autonomous ORACLE LOOP (Kashyap's reward-agent design) on our stack:
     capture the INITIAL world (reset) and the GOLDEN world (oracle run), then have
@@ -298,7 +322,15 @@ def _autogen_verifiers_job(task_id: str, seed: int, iterations: int) -> dict:
     for it in range(max(1, iterations)):
         suite = agent.generate_verifier_suite(brief, initial, golden, feedback)
         if not suite:
-            history.append({"iteration": it + 1, "error": "reward agent produced no suite (needs API key)"})
+            # Be honest about WHY — the old hardcoded "(needs API key)" was wrong
+            # whenever a key WAS set but the model call failed (rate limit / HTTP
+            # error / non-JSON output).
+            reason = (
+                "no ANTHROPIC_API_KEY configured"
+                if not settings.anthropic_api_key.strip()
+                else "the reward-agent model call failed or returned no usable suite (it may be rate-limited or unavailable)"
+            )
+            history.append({"iteration": it + 1, "error": f"reward agent produced no suite — {reason}"})
             break
         gate = verify.evaluate_states(suite, initial, golden)
         history.append({
