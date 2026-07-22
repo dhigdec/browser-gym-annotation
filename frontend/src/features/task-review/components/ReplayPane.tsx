@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon, t, weight, ACTION_COLOR } from "../../../ds";
 import type { Step, Tab } from "../../../lib/types";
 
@@ -186,6 +186,28 @@ export function ReplayPane({
     }
     return steps.find((s) => s.tabId === activeTabId) ?? step;
   })();
+  // Scale a captured snapshot (a full webpage) DOWN to fit the frame so the whole
+  // page is visible without scrolling.
+  const boxRef = useRef<HTMLDivElement>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [fit, setFit] = useState({ scale: 1, w: 1280, h: 900 });
+  const measure = () => {
+    const box = boxRef.current;
+    if (!box) return;
+    const doc = iframeRef.current?.contentDocument;
+    const w = Math.max(doc?.documentElement?.scrollWidth ?? 0, doc?.body?.scrollWidth ?? 0, 1200);
+    const h = Math.max(doc?.documentElement?.scrollHeight ?? 0, doc?.body?.scrollHeight ?? 0, 1);
+    setFit({ scale: Math.min(box.clientWidth / w, box.clientHeight / h, 1), w, h });
+  };
+  useEffect(() => {
+    const onResize = () => measure();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Re-fit whenever the shown frame changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { measure(); }, [activeFrame.snapshot, activeFrame.image, activeTabId]);
   return (
     <div style={{ flex: 1, minHeight: 0, background: t.n9, border: `1px solid ${t.n7}`, borderRadius: t.radiusXl, boxShadow: t.shadowMd, overflow: "hidden", display: "flex", flexDirection: "column" }}>
       <TabStrip tabs={tabs} activeId={activeTabId} onSelect={onSelectTab} />
@@ -199,7 +221,19 @@ export function ReplayPane({
           {activeFrame.image ? (
             <img src={activeFrame.image} alt="captured frame" style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "top center", background: t.n9 }} />
           ) : activeFrame.snapshot ? (
-            <iframe title="captured frame" src={`/api/snapshots/${activeFrame.snapshot}`} sandbox="allow-same-origin" style={{ width: "100%", height: "100%", border: "none", background: t.n9 }} />
+            <div ref={boxRef} style={{ position: "absolute", inset: 0, overflow: "hidden", display: "flex", justifyContent: "center", background: t.n9 }}>
+              <div style={{ width: fit.w * fit.scale, height: fit.h * fit.scale, flexShrink: 0, position: "relative" }}>
+                <iframe
+                  ref={iframeRef}
+                  key={activeFrame.snapshot}
+                  title="captured frame"
+                  src={`/api/snapshots/${activeFrame.snapshot}`}
+                  sandbox="allow-same-origin"
+                  onLoad={measure}
+                  style={{ position: "absolute", top: 0, left: 0, width: fit.w, height: fit.h, transform: `scale(${fit.scale})`, transformOrigin: "top left", border: "none", background: t.n9 }}
+                />
+              </div>
+            </div>
           ) : (
             <div style={{ position: "absolute", inset: 0, overflow: "auto", background: t.n9 }} />
           )}
