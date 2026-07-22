@@ -1,6 +1,6 @@
 import type { ActionType, VerifierLevel } from "../ds/tokens";
 
-export type AppKey = "shop" | "market" | "calendar" | "mail";
+export type AppKey = "shop" | "market" | "calendar" | "mail" | "food";
 
 /** One recorded agent step. */
 export interface Step {

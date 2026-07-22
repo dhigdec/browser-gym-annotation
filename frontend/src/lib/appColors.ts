@@ -8,4 +8,5 @@ export const APP_COLOR: Record<AppKey, string> = {
   market: t.deltaAmber,
   calendar: t.deltaEmerald,
   mail: t.deltaRose,
+  food: t.deltaViolet,
 };

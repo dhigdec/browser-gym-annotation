@@ -176,6 +176,16 @@ export function ReplayPane({
 }) {
   const activeTab = tabs.find((tb) => tb.id === activeTabId) ?? tabs[0];
   const showOverlay = step.tabId === activeTabId;
+  // The frame shown follows the SELECTED tab, not the current step — otherwise
+  // every tab renders the current step's page (which was the bug). Use the most
+  // recent step in the active tab at/before the current position; else that
+  // tab's first frame; else the current step.
+  const activeFrame = (() => {
+    for (let i = Math.min(stepIndex, steps.length - 1); i >= 0; i--) {
+      if (steps[i].tabId === activeTabId) return steps[i];
+    }
+    return steps.find((s) => s.tabId === activeTabId) ?? step;
+  })();
   return (
     <div style={{ flex: 1, minHeight: 0, background: t.n9, border: `1px solid ${t.n7}`, borderRadius: t.radiusXl, boxShadow: t.shadowMd, overflow: "hidden", display: "flex", flexDirection: "column" }}>
       <TabStrip tabs={tabs} activeId={activeTabId} onSelect={onSelectTab} />
@@ -186,10 +196,10 @@ export function ReplayPane({
           <div style={{ marginTop: 4, fontSize: "0.75rem", color: t.n3 }}>Captured frame · rendered DOM snapshot</div>
         </div>
         <div style={{ position: "relative", flex: 1, minHeight: 0, marginTop: 8 }}>
-          {step.image ? (
-            <img src={step.image} alt="captured frame" style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "top center", background: t.n9 }} />
-          ) : step.snapshot ? (
-            <iframe title="captured frame" src={`/api/snapshots/${step.snapshot}`} sandbox="allow-same-origin" style={{ width: "100%", height: "100%", border: "none", background: t.n9 }} />
+          {activeFrame.image ? (
+            <img src={activeFrame.image} alt="captured frame" style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "top center", background: t.n9 }} />
+          ) : activeFrame.snapshot ? (
+            <iframe title="captured frame" src={`/api/snapshots/${activeFrame.snapshot}`} sandbox="allow-same-origin" style={{ width: "100%", height: "100%", border: "none", background: t.n9 }} />
           ) : (
             <div style={{ position: "absolute", inset: 0, overflow: "auto", background: t.n9 }} />
           )}
