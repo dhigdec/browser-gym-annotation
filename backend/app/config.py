@@ -32,5 +32,13 @@ class Settings(BaseSettings):
     # applies Alembic migrations instead (`alembic upgrade head`).
     auto_create_all: bool = True
 
+    # Minimal auth (login-gated platform). `auth_secret` signs the session token —
+    # SET A REAL VALUE via AUTH_SECRET in prod. The token rides in an HttpOnly,
+    # SameSite=Lax cookie. auth_enabled=false leaves the platform open (dev only).
+    auth_secret: str = "dev-insecure-auth-secret-change-me"
+    auth_cookie: str = "bg_auth"
+    auth_ttl_hours: int = 168  # 7 days
+    auth_enabled: bool = True
+
 
 settings = Settings()

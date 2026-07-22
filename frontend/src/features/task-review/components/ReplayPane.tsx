@@ -186,8 +186,10 @@ export function ReplayPane({
     }
     return steps.find((s) => s.tabId === activeTabId) ?? step;
   })();
-  // Scale a captured snapshot (a full webpage) DOWN to fit the frame so the whole
-  // page is visible without scrolling.
+  // Scale a captured snapshot (a full webpage) to FILL the frame width — the page
+  // renders big and edge-to-edge, and scrolls vertically inside the frame exactly
+  // like a real browser tab. (Fitting both dims shrank tall pages to a tiny,
+  // side-gapped thumbnail.) Never upscale past 1:1 so text stays crisp.
   const boxRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [fit, setFit] = useState({ scale: 1, w: 1280, h: 900 });
@@ -197,7 +199,7 @@ export function ReplayPane({
     const doc = iframeRef.current?.contentDocument;
     const w = Math.max(doc?.documentElement?.scrollWidth ?? 0, doc?.body?.scrollWidth ?? 0, 1200);
     const h = Math.max(doc?.documentElement?.scrollHeight ?? 0, doc?.body?.scrollHeight ?? 0, 1);
-    setFit({ scale: Math.min(box.clientWidth / w, box.clientHeight / h, 1), w, h });
+    setFit({ scale: Math.min(box.clientWidth / w, 1), w, h });
   };
   useEffect(() => {
     const onResize = () => measure();
@@ -213,16 +215,19 @@ export function ReplayPane({
       <TabStrip tabs={tabs} activeId={activeTabId} onSelect={onSelectTab} />
       <UrlBar host={activeTab.host} />
       <div style={{ position: "relative", flex: 1, minHeight: 0, overflow: "hidden", background: t.n85, display: "flex", flexDirection: "column" }}>
-        <div style={{ padding: "12px 20px 0", flexShrink: 0 }}>
-          <div style={{ fontSize: "1.0625rem", fontWeight: weight.bold, color: t.n0, letterSpacing: "-0.4px" }}>{activeTab.title}</div>
-          <div style={{ marginTop: 4, fontSize: "0.75rem", color: t.n3 }}>Captured frame · rendered DOM snapshot</div>
+        <div style={{ padding: "9px 20px 2px", flexShrink: 0, display: "flex", alignItems: "baseline", gap: 10 }}>
+          <div style={{ fontSize: "0.9375rem", fontWeight: weight.bold, color: t.n0, letterSpacing: "-0.3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeTab.title}</div>
+          <div style={{ fontSize: "0.72rem", color: t.n3, flexShrink: 0, whiteSpace: "nowrap" }}>captured frame</div>
         </div>
         <div style={{ position: "relative", flex: 1, minHeight: 0, marginTop: 8 }}>
-          {activeFrame.image ? (
-            <img src={activeFrame.image} alt="captured frame" style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "top center", background: t.n9 }} />
-          ) : activeFrame.snapshot ? (
-            <div ref={boxRef} style={{ position: "absolute", inset: 0, overflow: "hidden", display: "flex", justifyContent: "center", background: t.n9 }}>
-              <div style={{ width: fit.w * fit.scale, height: fit.h * fit.scale, flexShrink: 0, position: "relative" }}>
+          {/* The captured page fills the frame WIDTH and scrolls vertically inside
+              this box (like a browser tab). The step controls below are siblings,
+              so they stay pinned over the scroll instead of drifting off-screen. */}
+          <div ref={boxRef} style={{ position: "absolute", inset: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain", background: t.n9 }}>
+            {activeFrame.image ? (
+              <img src={activeFrame.image} alt="captured frame" style={{ display: "block", width: "100%", height: "auto", background: t.n9 }} />
+            ) : activeFrame.snapshot ? (
+              <div style={{ width: fit.w * fit.scale, height: fit.h * fit.scale, position: "relative" }}>
                 <iframe
                   ref={iframeRef}
                   key={activeFrame.snapshot}
@@ -230,13 +235,14 @@ export function ReplayPane({
                   src={`/api/snapshots/${activeFrame.snapshot}`}
                   sandbox="allow-same-origin"
                   onLoad={measure}
-                  style={{ position: "absolute", top: 0, left: 0, width: fit.w, height: fit.h, transform: `scale(${fit.scale})`, transformOrigin: "top left", border: "none", background: t.n9 }}
+                  // read-only replay: make the frame pointer-transparent so wheel
+                  // scrolls the surrounding box (a scaled iframe otherwise swallows
+                  // the wheel and nothing scrolls).
+                  style={{ position: "absolute", top: 0, left: 0, width: fit.w, height: fit.h, transform: `scale(${fit.scale})`, transformOrigin: "top left", border: "none", background: t.n9, pointerEvents: "none" }}
                 />
               </div>
-            </div>
-          ) : (
-            <div style={{ position: "absolute", inset: 0, overflow: "auto", background: t.n9 }} />
-          )}
+            ) : null}
+          </div>
           {showOverlay && step.type === "error" && step.errorMsg && !correcting && (
             <div style={{ position: "absolute", left: 16, right: 16, top: 12, zIndex: 2, display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", background: t.redLite, border: `1px solid color-mix(in srgb, ${t.red} 42%, ${t.n9})`, borderRadius: 8, color: t.redDark, boxShadow: t.shadowSm }}>
               <Icon name="alert" size={17} stroke={1.7} color={t.redDark} />

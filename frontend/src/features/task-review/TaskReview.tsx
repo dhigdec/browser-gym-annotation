@@ -287,7 +287,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
             )}
           </div>
         } />
-        <div style={{ display: "flex", gap: 16, height: "calc(100vh - 120px)", minHeight: 620 }}>
+        <div style={{ display: "flex", gap: 16, height: "calc(100vh - 96px)", minHeight: 660 }}>
           <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
             <ReplayPane
               tabs={data.tabs}
@@ -335,20 +335,24 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
               onPlayToggle={() => dispatch({ t: "playToggle" })}
               onStepTo={(i) => dispatch({ t: "stepTo", i })}
             />
-            <ActionTrace
-              steps={steps}
-              current={state.step}
-              verifiedThrough={state.verifiedThrough}
-              stepsApproved={state.stepsApproved}
-              remaining={remaining}
-              rerunFrom={state.rerunFrom}
-              rerunMode={state.rerunMode}
-              tabs={data.tabs}
-              onStepTo={(i) => dispatch({ t: "stepTo", i })}
-              onApproveRemaining={() => dispatch({ t: "approveRemaining" })}
-            />
           </main>
           <RightPanel task={promptOverride ? { ...data.task, prompt: promptOverride } : data.task} summary={runSummary(state)} onSavePrompt={setPromptOverride} />
+        </div>
+        {/* The action trace sits full-width UNDER the browser pane so the replay
+            frame can own the full height of the row (a real tab-sized viewport). */}
+        <div style={{ padding: "12px 16px 0" }}>
+          <ActionTrace
+            steps={steps}
+            current={state.step}
+            verifiedThrough={state.verifiedThrough}
+            stepsApproved={state.stepsApproved}
+            remaining={remaining}
+            rerunFrom={state.rerunFrom}
+            rerunMode={state.rerunMode}
+            tabs={data.tabs}
+            onStepTo={(i) => dispatch({ t: "stepTo", i })}
+            onApproveRemaining={() => dispatch({ t: "approveRemaining" })}
+          />
         </div>
       </div>
 

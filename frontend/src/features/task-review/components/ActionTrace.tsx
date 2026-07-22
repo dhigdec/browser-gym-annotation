@@ -64,7 +64,7 @@ export function ActionTrace({
   const forkAt = rerunFrom == null ? -1 : steps.findIndex((s) => s.idx > rerunFrom);
 
   return (
-    <div style={{ height: 184, flexShrink: 0, background: t.n9, border: `1px solid ${t.n7}`, borderRadius: t.radiusXl, boxShadow: t.shadowMd, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div style={{ height: 132, flexShrink: 0, background: t.n9, border: `1px solid ${t.n7}`, borderRadius: t.radiusXl, boxShadow: t.shadowMd, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", borderBottom: `1px solid ${t.n7}`, flexShrink: 0 }}>
         <span style={{ fontSize: "0.8125rem", fontWeight: weight.bold, color: t.n1 }}>Action trace</span>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
