@@ -31,6 +31,7 @@ export interface SessionSnapshot {
   taskExternalId: string;
   status: SessionStatus;
   rerunFrom: number | null;
+  reviewedThrough: number;
   suite: { suiteId: string; version: number; verifiers: unknown[] } | null;
   lastBenchmark: { reward: number; results: Record<string, unknown>; at: string } | null;
   submission: { reward: number; kind: string; override: boolean; at: string } | null;
@@ -181,7 +182,7 @@ export async function downloadSampleBundle(sessionId: string): Promise<void> {
 
 export function patchSession(
   sid: string,
-  patch: { status?: SessionStatus; rerunFrom?: number },
+  patch: { status?: SessionStatus; rerunFrom?: number; reviewedThrough?: number },
 ): Promise<void> {
   return send(`/api/sessions/${sid}`, "PATCH", patch);
 }

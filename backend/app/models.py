@@ -41,6 +41,7 @@ class Annotator(Base):
     id: Mapped[UUID] = _pk()
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     role: Mapped[str] = mapped_column(String(32), default="annotator")  # annotator | reviewer | admin
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)  # pbkdf2 (minimal auth); null = no login yet
     created_at: Mapped[datetime] = mapped_column(default=func.now())
 
     sessions: Mapped[list["ReviewSession"]] = relationship(back_populates="annotator")
@@ -80,6 +81,7 @@ class ReviewSession(Base):
     # draft | steps_approved | verifiers_generated | benchmark_run | submitted
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
     rerun_from: Mapped[int | None] = mapped_column(nullable=True)
+    reviewed_through: Mapped[int] = mapped_column(Integer, default=0)  # granular per-step review progress
     created_at: Mapped[datetime] = mapped_column(default=func.now())
     updated_at: Mapped[datetime] = mapped_column(default=func.now(), onupdate=func.now())
 

@@ -77,6 +77,7 @@ class OpenSessionBody(_NulSafe):
 class PatchSessionBody(_NulSafe):
     status: str | None = None
     rerunFrom: int | None = None
+    reviewedThrough: int | None = None  # granular per-step review progress (persisted)
 
 
 class VerifierIn(_NulSafe):
@@ -293,6 +294,7 @@ def _snapshot(db: Session, s: ReviewSession) -> dict:
         "taskExternalId": _session_fixture(db, s)["task"]["id"],
         "status": s.status,
         "rerunFrom": s.rerun_from,
+        "reviewedThrough": s.reviewed_through,
         "suite": suite_out,
         "lastBenchmark": last_bench,
         "submission": submission,
@@ -408,6 +410,14 @@ def patch_session(session_id: UUID, body: PatchSessionBody, db: Session = Depend
             raise HTTPException(status_code=422, detail=f"rerunFrom {body.rerunFrom} out of range 0..{nsteps}")
         s.rerun_from = body.rerunFrom
         _audit(db, "", "session.correct", str(s.id), {"rerunFrom": body.rerunFrom}, session_id=s.id)
+    if body.reviewedThrough is not None:
+        # Persist the granular review progress on every change (a lenient sanity
+        # bound — gym sessions have no fixture step-count, so don't tie it to that).
+        if not 0 <= body.reviewedThrough <= 10000:
+            raise HTTPException(status_code=422, detail="reviewedThrough out of range")
+        if s.reviewed_through != body.reviewedThrough:
+            s.reviewed_through = body.reviewedThrough
+            _audit(db, "", "session.reviewed", str(s.id), {"reviewedThrough": body.reviewedThrough}, session_id=s.id)
     db.commit()
     db.refresh(s)
     return _snapshot(db, s)

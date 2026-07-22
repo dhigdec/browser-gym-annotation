@@ -59,7 +59,7 @@ export type Action =
   | { t: "submit" }
   | { t: "submitConfirmed"; reward: number; kind: string }
   | { t: "submitFailed"; error: string }
-  | { t: "hydrate"; status: PersistStatus; rerunFrom: number | null; results: Record<string, string> };
+  | { t: "hydrate"; status: PersistStatus; rerunFrom: number | null; reviewedThrough: number; results: Record<string, string> };
 
 export type PersistStatus =
   | "draft"
@@ -159,7 +159,9 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
         verifiersGenerated: ["verifiers_generated", "benchmark_run", "submitted"].includes(a.status),
         benchmarkRun: ["benchmark_run", "submitted"].includes(a.status),
         submitted: a.status === "submitted",
-        verifiedThrough: approved ? vs.length : s.verifiedThrough,
+        // Restore the granular review progress from the DB (never below the
+        // initial pre-review, and everything once the steps were approved).
+        verifiedThrough: Math.max(s.verifiedThrough, a.reviewedThrough, approved ? vs.length : 0),
         step: Math.min(step, last),
         activeTabId: vs[Math.min(step, last)]?.tabId ?? s.activeTabId,
         results: a.results,

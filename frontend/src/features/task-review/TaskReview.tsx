@@ -128,6 +128,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
   const suiteSigRef = useRef<string>("");
   const submittedRef = useRef(false);
   const rerunRef = useRef<number | null>(null);
+  const reviewedRef = useRef<number>(-1);
 
   useEffect(() => {
     let alive = true;
@@ -137,19 +138,21 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
       // Seed the sync refs to the restored state so we don't echo it back.
       statusRef.current = snap.status;
       rerunRef.current = snap.rerunFrom;
+      reviewedRef.current = snap.reviewedThrough;
       submittedRef.current = snap.status === "submitted";
       const results = (snap.lastBenchmark?.results as Record<string, string>) ?? {};
       const restored = reducer(makeInitialState(data), {
         t: "hydrate",
         status: snap.status,
         rerunFrom: snap.rerunFrom,
+        reviewedThrough: snap.reviewedThrough,
         results,
       });
       suiteSigRef.current = restored.verifiersGenerated
         ? JSON.stringify(verifierPayloads(restored))
         : "";
-      if (snap.status !== "draft" || snap.rerunFrom != null) {
-        dispatch({ t: "hydrate", status: snap.status, rerunFrom: snap.rerunFrom, results });
+      if (snap.status !== "draft" || snap.rerunFrom != null || snap.reviewedThrough > 0) {
+        dispatch({ t: "hydrate", status: snap.status, rerunFrom: snap.rerunFrom, reviewedThrough: snap.reviewedThrough, results });
       }
     });
     return () => {
@@ -200,6 +203,14 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
       void patchSession(sessionId, { rerunFrom: state.rerunFrom });
     }
   }, [sessionId, state.rerunFrom]);
+
+  // Granular review progress — persist every verify/approve so it survives a
+  // refresh (each click reflected in the DB).
+  useEffect(() => {
+    if (!sessionId || state.verifiedThrough === reviewedRef.current) return;
+    reviewedRef.current = state.verifiedThrough;
+    void patchSession(sessionId, { reviewedThrough: state.verifiedThrough });
+  }, [sessionId, state.verifiedThrough]);
 
   // Verifier suite — save a new immutable version whenever it changes.
   const suiteSig = state.verifiersGenerated ? JSON.stringify(verifierPayloads(state)) : "";
@@ -276,7 +287,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
             )}
           </div>
         } />
-        <div style={{ display: "flex", gap: 16, height: 632 }}>
+        <div style={{ display: "flex", gap: 16, height: "calc(100vh - 120px)", minHeight: 620 }}>
           <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
             <ReplayPane
               tabs={data.tabs}
