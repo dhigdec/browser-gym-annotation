@@ -1,8 +1,10 @@
 # Backend — Platform API (FastAPI)
 
-Python so it can directly import and run the gym, its verifiers, and the oracle
-solvers in later milestones. Currently serves the review contract from a fixture
-and connects to Postgres (schema auto-created in dev).
+Python so it can directly drive the live gym, its verifiers, and the oracle
+solvers. Serves the review contract (fixtures + live gym tasks), the verifier
+execution engine, session persistence, and the correction/drive-forward loop,
+backed by Postgres (schema auto-created + catalog seeded in dev). See the
+repo-root `README.md` for the full picture.
 
 ## Run natively (uses the local Postgres)
 ```bash
