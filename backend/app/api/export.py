@@ -64,14 +64,28 @@ def build_sample(db: Session, s: models.ReviewSession) -> dict:
         correction = None
 
     seed_state = (task.seed_state or {}) if task else {}
-    verifiers = []
-    if suite:
-        for v in db.scalars(select(models.Verifier).where(models.Verifier.suite_id == suite.id)):
-            verifiers.append({
-                "level": v.level, "assertion": v.assertion,
-                "check": v.check_ir or None, "gym_result": v.gym_result or None,
-            })
-    reward = run.reward if run else (sub.reward if sub else None)
+    # Prefer the snapshot frozen at submit time (Cluster A) — it is immune to any
+    # post-submit mutation of the live suite/benchmark. Fall back to the live
+    # rebuild only for legacy submissions predating the snapshot column.
+    frozen = sub.snapshot if (sub is not None and sub.snapshot) else None
+    if frozen:
+        verifiers = [
+            {"level": v.get("level"), "assertion": v.get("assertion"),
+             "check": v.get("check"), "gym_result": v.get("gym_result")}
+            for v in frozen.get("verifiers", [])
+        ]
+        reward = frozen.get("reward")
+        overridden = frozen.get("overridden", [])
+    else:
+        verifiers = []
+        if suite:
+            for v in db.scalars(select(models.Verifier).where(models.Verifier.suite_id == suite.id)):
+                verifiers.append({
+                    "level": v.level, "assertion": v.assertion,
+                    "check": v.check_ir or None, "gym_result": v.gym_result or None,
+                })
+        reward = run.reward if run else (sub.reward if sub else None)
+        overridden = (run.overridden if run else [])
 
     return {
         "sample_id": str(s.id),
@@ -94,7 +108,7 @@ def build_sample(db: Session, s: models.ReviewSession) -> dict:
         "submission": None if sub is None else {
             "reward": sub.reward, "kind": sub.kind, "accepted": sub.accepted,
             "override": sub.submitted_with_override,
-            "overridden_verifiers": (run.overridden if run else []),  # provenance: which checks a human forced
+            "overridden_verifiers": overridden,  # provenance: which checks a human forced (frozen at submit)
             "at": sub.created_at.isoformat(),
         },
         "annotator": annotator.email if annotator else None,

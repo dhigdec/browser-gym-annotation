@@ -22,7 +22,7 @@ migration (create_all bootstraps the schema in dev).
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, Float, ForeignKey, Integer, JSON, String, Text, Uuid, func
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -125,6 +125,10 @@ class TrajectoryStep(Base):
 
 class VerifierSuite(Base):
     __tablename__ = "verifier_suite"
+    # A suite version is immutable and unique per session — concurrent saves must
+    # not collide on the same (session_id, version) or one silently overwrites the
+    # other. save_suite recomputes+retries on the resulting IntegrityError.
+    __table_args__ = (UniqueConstraint("session_id", "version", name="uq_verifier_suite_session_version"),)
     id: Mapped[UUID] = _pk()
     session_id: Mapped[UUID] = _fk("review_session.id")
     version: Mapped[int] = mapped_column(default=1)
@@ -166,13 +170,21 @@ class BenchmarkRun(Base):
 
 class Submission(Base):
     __tablename__ = "submission"
+    # Exactly one submission per session — submit() locks the session, so the
+    # non-atomic check-then-insert is backstopped here against a concurrent
+    # double-submit (submit() maps the IntegrityError back to 409).
+    __table_args__ = (UniqueConstraint("session_id", name="uq_submission_session"),)
     id: Mapped[UUID] = _pk()
     session_id: Mapped[UUID] = _fk("review_session.id")
     reward: Mapped[int] = mapped_column(default=1)
-    kind: Mapped[str] = mapped_column(String(16), default="golden")  # golden | breaker
+    kind: Mapped[str] = mapped_column(String(16), default="golden")  # golden | breaker | flagged
     submitted_with_override: Mapped[bool] = mapped_column(Boolean, default=False)
     override_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     accepted: Mapped[bool] = mapped_column(Boolean, default=False)  # a reviewer adjudicated this the accepted golden (QA)
+    # The deliverable frozen AT SUBMIT TIME (Cluster A). export.build_sample reads
+    # this instead of the live latest-suite/latest-run, so a post-submit mutation
+    # can never rewrite what was actually reviewed and scored.
+    snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=func.now())
 
     session: Mapped[ReviewSession] = relationship(back_populates="submissions")

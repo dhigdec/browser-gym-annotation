@@ -11,8 +11,9 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.agent import deterministic_branch, generate_branch
@@ -44,7 +45,9 @@ _STATUSES = _OPEN | {"submitted"}
 
 
 class OpenSessionBody(BaseModel):
-    annotatorEmail: str | None = None
+    # Bounded to the annotator.email column width — an over-length value must be a
+    # 422, not an unhandled DB truncation 500.
+    annotatorEmail: str | None = Field(default=None, max_length=255)
     fresh: bool = False  # start a NEW session instead of resuming the latest (e.g. after submit)
 
 
@@ -54,7 +57,7 @@ class PatchSessionBody(BaseModel):
 
 
 class VerifierIn(BaseModel):
-    id: str
+    id: str = Field(max_length=64)  # bounded to verifier.ext_id column width (422, not a 500)
     level: str
     assertion: str
     code: str
@@ -270,6 +273,18 @@ def _get_session(db: Session, session_id: UUID) -> ReviewSession:
     return s
 
 
+def _assert_not_submitted(s: ReviewSession) -> None:
+    """A submitted session is immutable. This guard rides on EVERY mutating
+    endpoint (not just PATCH/rerun/submit) so the suite and its benchmark runs
+    can't be rewritten after the sample is locked — otherwise the exported
+    golden bundle would drift from what was reviewed and scored."""
+    if s.status == "submitted":
+        raise HTTPException(
+            status_code=409,
+            detail="session is submitted (immutable) — start a new session to re-annotate",
+        )
+
+
 _EMPTY_FIXTURE = {"task": {"prompt": ""}, "steps": [], "correctedTail": [], "finalState": {"original": {}, "corrected": {}}, "tabs": []}
 
 
@@ -397,27 +412,44 @@ def rerun(session_id: UUID, body: RerunBody, db: Session = Depends(get_db)) -> d
 def save_suite(session_id: UUID, body: SaveSuiteBody, db: Session = Depends(get_db)) -> dict:
     """Persist the current verifier suite as a new immutable version."""
     s = _get_session(db, session_id)
-    prev = _latest_suite(db, s.id)
-    version = (prev.version + 1) if prev else 1
-    suite = VerifierSuite(session_id=s.id, version=version)
-    db.add(suite)
-    db.flush()
-    for v in body.verifiers:
-        db.add(
-            Verifier(
-                suite_id=suite.id,
-                ext_id=v.id,
-                level=v.level,
-                assertion=v.assertion,
-                code=v.code,
-                check_ir=v.check or {},  # persist the executable IR so reward is server-recomputable
-                fails_until_corrected=v.failsUntilCorrected,
-                placeholder=v.placeholder,
-                added_by_human=v.addedByHuman,
-            )
-        )
-    _audit(db, "", "suite.save", str(suite.id), {"version": version, "count": len(body.verifiers)}, session_id=s.id)
-    db.commit()
+    _assert_not_submitted(s)
+    # Reward results are keyed by the authoring id — a duplicate id would let one
+    # verifier's verdict overwrite another's, masking a failing/placeholder check.
+    ids = [v.id for v in body.verifiers]
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    if dupes:
+        raise HTTPException(status_code=422, detail=f"duplicate verifier ids: {dupes}")
+    # A unique (session_id, version) means two concurrent saves can't collide on a
+    # version. The violation surfaces at flush() (the INSERT), so the whole attempt
+    # — recompute version, insert, commit — must sit inside the retry.
+    for _attempt in range(5):
+        prev = _latest_suite(db, s.id)
+        version = (prev.version + 1) if prev else 1
+        try:
+            suite = VerifierSuite(session_id=s.id, version=version)
+            db.add(suite)
+            db.flush()
+            for v in body.verifiers:
+                db.add(
+                    Verifier(
+                        suite_id=suite.id,
+                        ext_id=v.id,
+                        level=v.level,
+                        assertion=v.assertion,
+                        code=v.code,
+                        check_ir=v.check or {},  # persist the executable IR so reward is server-recomputable
+                        fails_until_corrected=v.failsUntilCorrected,
+                        placeholder=v.placeholder,
+                        added_by_human=v.addedByHuman,
+                    )
+                )
+            _audit(db, "", "suite.save", str(suite.id), {"version": version, "count": len(body.verifiers)}, session_id=s.id)
+            db.commit()
+            break
+        except IntegrityError:
+            db.rollback()  # a concurrent save took this version — recompute and retry
+    else:
+        raise HTTPException(status_code=409, detail="concurrent suite save — please retry")
     return _snapshot(db, s)
 
 
@@ -429,6 +461,7 @@ def run_verifiers(session_id: UUID, body: RunBody, db: Session = Depends(get_db)
     client's `verifiers` are ignored for scoring, so a fabricated passing check
     cannot inflate the reward."""
     s = _get_session(db, session_id)
+    _assert_not_submitted(s)
     out = _run_benchmark(db, s, body.corrected, set(body.overrides))
     db.commit()
     return out
@@ -439,6 +472,7 @@ def record_benchmark(session_id: UUID, body: BenchmarkBody, db: Session = Depend
     """Deprecated alias for /run — kept for back-compat. Recomputes the reward
     from the persisted suite; the client-supplied `reward` is ignored."""
     s = _get_session(db, session_id)
+    _assert_not_submitted(s)
     _run_benchmark(db, s, body.corrected, set(body.overrides))
     db.commit()
     return _snapshot(db, s)
@@ -471,18 +505,30 @@ def submit(session_id: UUID, body: SubmitBody, db: Session = Depends(get_db)) ->
         raise HTTPException(status_code=409, detail="reward != 1 requires an override")
     # A reward reached by overriding a SAFETY verifier is NOT a clean golden — the
     # provenance must ride on the sample so an unsafe run can't ship as training gold.
-    safety_overridden = bool(overridden_ids) and db.scalar(
-        select(Verifier).where(
-            Verifier.suite_id == suite.id, Verifier.ext_id.in_(overridden_ids), Verifier.level == "safety"
-        )
-    ) is not None
+    suite_verifiers = db.scalars(select(Verifier).where(Verifier.suite_id == suite.id)).all()
+    safety_overridden = any(v.ext_id in overridden_ids and v.level == "safety" for v in suite_verifiers)
     kind = "flagged" if safety_overridden else ("golden" if reward == 1 else "breaker")
+    # Freeze the deliverable at submit time (Cluster A). export.build_sample reads
+    # this snapshot, so nothing appended after the lock can rewrite the shipped
+    # sample's reward or verifier suite.
+    snapshot = {
+        "suite_version": suite.version,
+        "reward": reward,
+        "results": dict(last_run.results or {}),
+        "overridden": overridden_ids,
+        "verifiers": [
+            {"ext_id": v.ext_id, "level": v.level, "assertion": v.assertion,
+             "check": v.check_ir or None, "gym_result": v.gym_result or None}
+            for v in suite_verifiers
+        ],
+    }
     sub = Submission(
         session_id=s.id,
         reward=reward,
         kind=kind,
         submitted_with_override=used_override,
         override_reason=(body.overrideReason if used_override else None),
+        snapshot=snapshot,
     )
     db.add(sub)
     s.status = "submitted"
@@ -495,5 +541,12 @@ def submit(session_id: UUID, body: SubmitBody, db: Session = Depends(get_db)) ->
         },
         session_id=s.id,
     )
-    db.commit()
+    # The unique (submission.session_id) makes the check-then-insert atomic — a
+    # racing concurrent submit hits the constraint and is reported as 409, not a
+    # duplicate row.
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="session already submitted — start a new session to re-annotate") from None
     return _snapshot(db, s)

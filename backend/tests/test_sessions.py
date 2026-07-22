@@ -190,3 +190,60 @@ def test_open_session_records_a_trajectory(client, db_session):
     assert len(trajs) == 1
     assert str(trajs[0].session_id) == sid
     assert db_session.query(TrajectoryStep).count() > 0  # the fixture trace is recorded
+
+
+# ---- Cluster A: the immutability lock covers EVERY mutating endpoint ----
+
+
+def _submitted_golden(client, monkeypatch, task="GYM-2041"):
+    monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
+    sid = _open(client, task)
+    vs = _verifiers(client, task)
+    client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
+    client.post(f"/api/sessions/{sid}/run", json={"corrected": True, "verifiers": vs, "overrides": []})
+    assert client.post(f"/api/sessions/{sid}/submit", json={"reward": 1, "override": False}).status_code == 200
+    return sid, vs
+
+
+def test_submitted_session_locks_suite_run_and_benchmark(client, monkeypatch):
+    """The lock must ride on suite/run/benchmark too — otherwise a locked sample's
+    scored suite could be rewritten and the exported bundle would drift."""
+    sid, vs = _submitted_golden(client, monkeypatch)
+    assert client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs}).status_code == 409
+    assert client.post(f"/api/sessions/{sid}/run", json={"corrected": False, "overrides": []}).status_code == 409
+    assert client.post(f"/api/sessions/{sid}/benchmark", json={"corrected": False}).status_code == 409
+
+
+# ---- Cluster C: input validation returns 4xx, never a 500 ----
+
+
+def test_duplicate_verifier_ids_rejected(client):
+    sid = _open(client)
+    dup = [
+        {"id": "x", "level": "ui", "assertion": "a", "code": "c", "check": {"kind": "state_true", "path": "order.placed"}},
+        {"id": "x", "level": "ui", "assertion": "b", "code": "c", "check": {"kind": "state_true", "path": "order.placed"}},
+    ]
+    assert client.put(f"/api/sessions/{sid}/suite", json={"verifiers": dup}).status_code == 422
+
+
+def test_oversized_inputs_return_422_not_500(client):
+    # annotatorEmail bounded to 255, verifier id bounded to 64
+    assert client.post("/api/tasks/GYM-2041/sessions", json={"annotatorEmail": "x" * 300 + "@t.co"}).status_code == 422
+    sid = _open(client)
+    big = [{"id": "y" * 100, "level": "ui", "assertion": "a", "code": "c", "check": {"kind": "state_true", "path": "order.placed"}}]
+    assert client.put(f"/api/sessions/{sid}/suite", json={"verifiers": big}).status_code == 422
+
+
+# ---- Cluster B: one submission per session, enforced at the DB layer ----
+
+
+def test_only_one_submission_per_session(client, monkeypatch, db_session):
+    from uuid import UUID
+
+    from app.models import Submission
+
+    sid, _ = _submitted_golden(client, monkeypatch)
+    # a second submit is blocked, and the DB holds exactly one row for the session
+    assert client.post(f"/api/sessions/{sid}/submit", json={"reward": 0, "override": True, "overrideReason": "x"}).status_code == 409
+    n = db_session.query(Submission).filter(Submission.session_id == UUID(sid)).count()
+    assert n == 1

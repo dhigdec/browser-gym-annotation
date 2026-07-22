@@ -49,3 +49,29 @@ def test_list_samples_and_accepted_filter(client, monkeypatch):
     assert client.get("/api/export/samples?accepted=true").json()["count"] == 0
     client.post("/api/qa/tasks/GYM-2041/adjudicate", json={"sessionId": sid})
     assert client.get("/api/export/samples?accepted=true").json()["count"] == 1
+
+
+def test_export_reads_the_frozen_snapshot_not_the_live_suite(client, monkeypatch, db_session):
+    """Cluster A: the deliverable is frozen at submit. Even if a later suite
+    version is forced into the DB directly (bypassing the API lock), the exported
+    bundle must still reflect what was reviewed and scored at submit time."""
+    from uuid import UUID
+
+    from app.models import Verifier, VerifierSuite
+
+    sid = _golden(client)
+    before = client.get(f"/api/export/samples/{sid}").json()
+    assert before["reward"] == 1 and len(before["verifiers"]) == 14
+
+    # Forge a bogus 1-verifier suite straight into the DB (what the closed lock now
+    # prevents over the API, but proves build_sample ignores the live latest).
+    forged = VerifierSuite(session_id=UUID(sid), version=99)
+    db_session.add(forged)
+    db_session.flush()
+    db_session.add(Verifier(suite_id=forged.id, ext_id="bogus", level="ui", assertion="trivially true", code="x", check_ir={"kind": "state_true", "path": "order.placed"}))
+    db_session.commit()
+
+    after = client.get(f"/api/export/samples/{sid}").json()
+    assert after["reward"] == 1                     # unchanged — read from the snapshot
+    assert len(after["verifiers"]) == 14            # not the forged single verifier
+    assert not any(v["assertion"] == "trivially true" for v in after["verifiers"])
