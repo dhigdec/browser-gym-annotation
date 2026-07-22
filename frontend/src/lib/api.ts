@@ -6,7 +6,7 @@ import type { ReviewData, ReviewPayload, Step, TaskListItem } from "./types";
  *  fixtures. Falls back to a single synthetic row offline. */
 export async function fetchTasks(set: "breakers" | "fixtures" | "all" = "breakers"): Promise<TaskListItem[]> {
   try {
-    const res = await fetch(`/api/tasks?set=${set}`);
+    const res = await fetch(`/api/tasks?set=${set}`, { credentials: "include" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const list = (await res.json()) as TaskListItem[];
     return list.length ? list : fallbackTasks();
@@ -91,7 +91,7 @@ export interface LoadResult {
  *  fixture if the API is unreachable (so the app runs standalone). */
 export async function fetchReview(taskId: string): Promise<LoadResult> {
   try {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/review`);
+    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/review`, { credentials: "include" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const payload = (await res.json()) as ReviewPayload;
     return { data: mapPayload(payload), source: "api" };
@@ -109,6 +109,7 @@ async function post<T>(url: string, body: unknown): Promise<T | null> {
     const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
+      credentials: "include", // send the auth session cookie
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -123,6 +124,7 @@ async function send(url: string, method: "PATCH" | "PUT", body: unknown): Promis
     await fetch(url, {
       method,
       headers: { "content-type": "application/json" },
+      credentials: "include", // send the auth session cookie
       body: JSON.stringify(body),
     });
   } catch {
@@ -153,7 +155,7 @@ export interface QaSubmission {
 
 export async function fetchQaTasks(): Promise<QaTaskRow[]> {
   try {
-    const res = await fetch("/api/qa/tasks");
+    const res = await fetch("/api/qa/tasks", { credentials: "include" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return ((await res.json()) as { tasks: QaTaskRow[] }).tasks;
   } catch {
@@ -163,7 +165,7 @@ export async function fetchQaTasks(): Promise<QaTaskRow[]> {
 
 export async function fetchQaSubmissions(taskId: string): Promise<{ title: string; agreement: QaTaskRow; submissions: QaSubmission[] } | null> {
   try {
-    const res = await fetch(`/api/qa/tasks/${encodeURIComponent(taskId)}/submissions`);
+    const res = await fetch(`/api/qa/tasks/${encodeURIComponent(taskId)}/submissions`, { credentials: "include" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch {
@@ -181,7 +183,7 @@ export async function adjudicate(taskId: string, sessionId: string, reviewer: st
 /** Download one annotation as the deliverable golden-sample bundle (JSON). */
 export async function downloadSampleBundle(sessionId: string): Promise<void> {
   try {
-    const res = await fetch(`/api/export/samples/${sessionId}`);
+    const res = await fetch(`/api/export/samples/${sessionId}`, { credentials: "include" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const blob = new Blob([JSON.stringify(await res.json(), null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -246,7 +248,7 @@ export interface GymStatus { connected: boolean; url: string }
  *  false, and the UI gates the 312-task features while the fixture flow works. */
 export async function fetchGymStatus(): Promise<GymStatus> {
   try {
-    const res = await fetch("/api/gym/status");
+    const res = await fetch("/api/gym/status", { credentials: "include" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return (await res.json()) as GymStatus;
   } catch {
@@ -257,7 +259,7 @@ export async function fetchGymStatus(): Promise<GymStatus> {
 /** The catalog of real gym tasks (312), or null if the gym is unreachable. */
 export async function fetchGymTasks(): Promise<GymTaskItem[] | null> {
   try {
-    const res = await fetch("/api/gym/tasks");
+    const res = await fetch("/api/gym/tasks", { credentials: "include" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = (await res.json()) as { tasks: string[] };
     return body.tasks.map((id) => ({ id }));
@@ -323,6 +325,7 @@ export async function driveForwardGym(
     resumeUrl: string;
     resumeStep?: number;
     agent?: string;
+    sessionId?: string; // the human session driving this correction → verdict isolation
   },
   opts?: { onStatus?: (s: GymJob["status"]) => void; intervalMs?: number; timeoutMs?: number },
 ): Promise<{ reward: number; steps: Step[] } | null> {
@@ -372,7 +375,7 @@ export async function resumeGymReview(body: {
  *  one for next time. */
 export async function getPersistedGymReview(taskId: string): Promise<ReviewData | null> {
   try {
-    const res = await fetch(`/api/gym/tasks/${encodeURIComponent(taskId)}/persisted-review`);
+    const res = await fetch(`/api/gym/tasks/${encodeURIComponent(taskId)}/persisted-review`, { credentials: "include" });
     if (!res.ok) return null; // 404 = never reviewed → run fresh
     return mapPayload((await res.json()) as ReviewPayload);
   } catch {
@@ -390,7 +393,7 @@ export async function startGymReview(taskId: string, agent = "oracle", seed = 0,
 /** One poll of a gym job. */
 export async function pollGymJob(jobId: string): Promise<GymJob | null> {
   try {
-    const res = await fetch(`/api/gym/jobs/${encodeURIComponent(jobId)}`);
+    const res = await fetch(`/api/gym/jobs/${encodeURIComponent(jobId)}`, { credentials: "include" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return (await res.json()) as GymJob;
   } catch {

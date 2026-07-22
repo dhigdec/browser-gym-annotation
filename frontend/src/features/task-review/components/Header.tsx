@@ -1,4 +1,5 @@
 import { FocusBadge, Icon, t, weight } from "../../../ds";
+import type { Annotator } from "../../auth/authApi";
 
 function Rule() {
   return <span style={{ width: 1, height: 22, background: t.n7, flexShrink: 0 }} />;
@@ -28,9 +29,10 @@ function PagerBox({ dir, onClick, disabled }: { dir: "chevronLeft" | "chevronRig
   );
 }
 
-export function Header({ index, total, onPrev, onNext, onSkip, onBrowseGym, gymTaskId, gymAdhoc, onExitGym, onOpenQa, annotatorEmail, onSetAnnotator, queueSet, onToggleQueue }: { index: number; total: number; onPrev: () => void; onNext: () => void; onSkip: () => void; onBrowseGym: () => void; gymTaskId?: string | null; gymAdhoc?: boolean; onExitGym?: () => void; onOpenQa?: () => void; annotatorEmail?: string; onSetAnnotator?: (email: string) => void; queueSet?: "breakers" | "fixtures"; onToggleQueue?: () => void }) {
+export function Header({ index, total, onPrev, onNext, onSkip, onBrowseGym, gymTaskId, gymAdhoc, onExitGym, onOpenQa, annotator, onOpenProfile, queueSet, onToggleQueue }: { index: number; total: number; onPrev: () => void; onNext: () => void; onSkip: () => void; onBrowseGym: () => void; gymTaskId?: string | null; gymAdhoc?: boolean; onExitGym?: () => void; onOpenQa?: () => void; annotator?: Annotator | null; onOpenProfile?: () => void; queueSet?: "breakers" | "fixtures"; onToggleQueue?: () => void }) {
   const mono = { fontFamily: t.fontMono } as const;
-  const initial = (annotatorEmail || "?").trim().charAt(0).toUpperCase() || "?";
+  const name = annotator?.displayName || annotator?.email || "?";
+  const initial = name.trim().charAt(0).toUpperCase() || "?";
   return (
     <header
       style={{
@@ -90,15 +92,16 @@ export function Header({ index, total, onPrev, onNext, onSkip, onBrowseGym, gymT
       )}
       <span style={{ flex: 1 }} />
       <FocusBadge>Multitab · Web Navigation</FocusBadge>
-      <span title="You're annotating as this identity — change it to submit as a different annotator" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontSize: "0.68rem", color: t.n3, fontWeight: weight.semibold, textTransform: "uppercase", letterSpacing: "0.06em" }}>as</span>
-        <input
-          value={annotatorEmail ?? ""}
-          onChange={(e) => onSetAnnotator?.(e.target.value)}
-          spellCheck={false}
-          style={{ width: 168, padding: "5px 9px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, background: t.n85, color: t.n1, fontFamily: t.fontMono, fontSize: "0.72rem", outline: "none" }}
-        />
-        <span style={{ width: 34, height: 34, borderRadius: t.radiusFull, background: t.primary7, color: t.n9, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "0.82rem", fontWeight: weight.bold, flexShrink: 0 }}>{initial}</span>
+      <span
+        onClick={onOpenProfile}
+        title="Your profile — view stats or log out"
+        style={{ display: "inline-flex", alignItems: "center", gap: 9, cursor: "pointer", padding: "4px 8px 4px 4px", borderRadius: t.radiusFull, border: `1px solid ${t.n7}` }}
+      >
+        <span style={{ width: 32, height: 32, borderRadius: t.radiusFull, background: annotator ? `hsl(${annotator.avatarHue} 62% 52%)` : t.primary7, color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "0.8rem", fontWeight: weight.bold, flexShrink: 0 }}>{initial}</span>
+        <span style={{ display: "inline-flex", flexDirection: "column", lineHeight: 1.15, marginRight: 2 }}>
+          <span style={{ fontSize: "0.78rem", fontWeight: weight.semibold, color: t.n1 }}>{name}</span>
+          <span style={{ fontSize: "0.62rem", color: t.n3, textTransform: "uppercase", letterSpacing: "0.05em" }}>{annotator?.role ?? ""}</span>
+        </span>
       </span>
     </header>
   );

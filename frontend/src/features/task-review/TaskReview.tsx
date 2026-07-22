@@ -38,6 +38,9 @@ import {
   verifierPayloads,
   visibleSteps,
 } from "../../lib/reviewMachine";
+import { useAuth } from "../auth/AuthContext";
+import { ProfilePanel } from "../auth/ProfilePanel";
+import type { Annotator } from "../auth/authApi";
 import { Header } from "./components/Header";
 import { ReplayPane } from "./components/ReplayPane";
 import { ActionTrace } from "./components/ActionTrace";
@@ -104,8 +107,8 @@ interface TaskNav {
   gymTaskId?: string | null;
   onExitGym?: () => void;
   onOpenQa: () => void;
-  annotatorEmail: string;
-  onSetAnnotator: (email: string) => void;
+  annotator: Annotator | null;
+  onOpenProfile: () => void;
   queueSet?: "breakers" | "fixtures";
   onToggleQueue?: () => void;
   gymAdhoc?: boolean;
@@ -141,7 +144,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
 
   useEffect(() => {
     let alive = true;
-    openSession(data.task.id, { fresh: startFresh, annotatorEmail: nav.annotatorEmail }).then((snap) => {
+    openSession(data.task.id, { fresh: startFresh }).then((snap) => {
       if (!alive || !snap) return;
       setSessionId(snap.sessionId);
       const results = (snap.lastBenchmark?.results as Record<string, string>) ?? {};
@@ -330,7 +333,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
                   const fromStep = steps.length;
                   setDriving("queued");
                   const res = await driveForwardGym(
-                    { taskId: data.task.id, seed: data.gymResume!.seed, worldState: data.gymResume!.worldState, resumeUrl: data.gymResume!.finalUrl || "/", resumeStep: fromStep, agent: "openai" },
+                    { taskId: data.task.id, seed: data.gymResume!.seed, worldState: data.gymResume!.worldState, resumeUrl: data.gymResume!.finalUrl || "/", resumeStep: fromStep, agent: "openai", sessionId: sessionId ?? undefined },
                     { onStatus: (s) => setDriving(s === "done" || s === "error" ? null : s) },
                   );
                   setDriving(null);
@@ -395,6 +398,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
                       resumeUrl,
                       resumeStep: fromStep,
                       agent: "openai", // gpt-5.1 — genuinely continues from the corrected state
+                      sessionId: sessionId ?? undefined, // isolate the corrected verdict to THIS annotator
                     },
                     { onStatus: (s) => setDriving(s === "done" || s === "error" ? null : s) },
                   );
@@ -781,7 +785,8 @@ export function TaskReview() {
   const [qaOpen, setQaOpen] = useState(false);
   const [queueSet, setQueueSet] = useState<"breakers" | "fixtures">("breakers");
   const [gymAdhoc, setGymAdhoc] = useState(false); // true = loaded off-queue via the Gym picker (not the main queue)
-  const [annotatorEmail, setAnnotatorEmail] = useState(() => localStorage.getItem("annotatorEmail") || "annotator@deccan.ai");
+  const { annotator } = useAuth(); // the signed-in identity — replaces the old free-text "AS" field
+  const [profileOpen, setProfileOpen] = useState(false);
 
   // The review queue: the 85 breakers by default, or the demo fixtures.
   useEffect(() => {
@@ -858,8 +863,8 @@ export function TaskReview() {
       if (currentTask?.source === "gym") void loadGym(taskId, false);
     },
     onOpenQa: () => setQaOpen(true),
-    annotatorEmail,
-    onSetAnnotator: (email) => { setAnnotatorEmail(email); localStorage.setItem("annotatorEmail", email); },
+    annotator,
+    onOpenProfile: () => setProfileOpen(true),
     queueSet,
     onToggleQueue: () => { setGymData(null); setQueueSet((q) => (q === "breakers" ? "fixtures" : "breakers")); },
     // Prompt edit → re-drive the WHOLE run from the initial state under the new
@@ -882,7 +887,7 @@ export function TaskReview() {
     <>
       {effective ? (
         <ReviewScreen
-          key={`${gymData ? `gym:${gymData.task.id}` : taskId}#${freshNonce}#${annotatorEmail}`}
+          key={`${gymData ? `gym:${gymData.task.id}` : taskId}#${freshNonce}#${annotator?.email ?? ""}`}
           data={effective}
           nav={nav}
           startFresh={freshNonce > 0}
@@ -892,7 +897,8 @@ export function TaskReview() {
         <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: t.n3, fontFamily: t.fontPrimary }}>Loading task…</div>
       )}
       {pickerOpen && <GymPicker onClose={() => setPickerOpen(false)} onPick={(id) => loadGym(id, true)} />}
-      {qaOpen && <QaPanel onClose={() => setQaOpen(false)} reviewer={annotatorEmail} />}
+      {qaOpen && <QaPanel onClose={() => setQaOpen(false)} reviewer={annotator?.email ?? ""} />}
+      {profileOpen && <ProfilePanel onClose={() => setProfileOpen(false)} />}
       {gymLoading && <GymLoading taskId={gymLoading} phase={gymPhase} />}
       {gymError && (
         <div style={{ position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 16, background: t.redLite, color: t.redDark, border: `1px solid color-mix(in srgb, ${t.red} 42%, ${t.n9})`, padding: "10px 16px", borderRadius: t.radiusLg, fontSize: "0.84rem", fontWeight: weight.semibold, zIndex: 70, fontFamily: t.fontPrimary, boxShadow: t.shadowLg }}>
