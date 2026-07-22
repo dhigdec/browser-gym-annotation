@@ -214,13 +214,23 @@ export function visibleSteps(s: ReviewState): Step[] {
 
 export function runSummary(s: ReviewState): Metric[] {
   if (s.rerunFrom == null) return s.data.task.runSummary;
-  const total = visibleSteps(s).length;
+  const vs = visibleSteps(s);
+  const total = vs.length;
+  // Errors the re-run STILL has (past the fork) — the pre-fork error is the one the
+  // annotator resolved by correcting; a new error in the continuation is NOT resolved.
+  const unresolvedErrors = vs.filter((st) => st.type === "error" && st.idx > (s.rerunFrom ?? -1)).length;
   const gymScore = s.data.source === "gym" && s.gymResumeReward != null ? s.gymResumeReward : null;
+  // Match on the actual metric labels (case-insensitive prefix), so the count
+  // updates after a correction instead of showing the pre-correction values.
   return s.data.task.runSummary.map((m) => {
-    if (m.label === "Errors") return { value: "0", label: "Errors (resolved)", tone: "success" };
-    if (m.label === "Steps used") return { ...m, value: `${total}/20` };
+    const label = m.label.toLowerCase();
+    if (label.startsWith("error")) {
+      if (unresolvedErrors > 0) return { ...m, value: String(unresolvedErrors), label: "Errors", tone: "error" };
+      return { ...m, value: "0", label: "Errors (resolved)", tone: "success" };
+    }
+    if (label.startsWith("step")) return { ...m, value: String(total) };
     // After a gym drive-forward, show the RE-VERIFIED score on the corrected run.
-    if (m.label === "Score" && gymScore != null) return { ...m, value: gymScore.toFixed(2), tone: gymScore >= 1 ? "success" : "error" };
+    if (label.startsWith("score") && gymScore != null) return { ...m, value: gymScore.toFixed(2), tone: gymScore >= 1 ? "success" : "error" };
     return m;
   });
 }
