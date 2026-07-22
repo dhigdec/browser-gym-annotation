@@ -358,7 +358,12 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
             )}
           </div>
         } />
-        <div style={{ display: "flex", gap: 16, height: "calc(100vh - 96px)", minHeight: 660 }}>
+        {/* Section 1 fills exactly the first screen: viewport minus the header
+            (56) + this block's padding (16+8) + the section header (~36) + a small
+            buffer. Getting this wrong makes the page scroll, sliding the replay's
+            tab-strip/URL bar up under the sticky header (clipping). minHeight kept
+            modest so short viewports degrade gracefully instead of forcing overflow. */}
+        <div style={{ display: "flex", gap: 16, height: "calc(100dvh - 134px)", minHeight: 440 }}>
           <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
             <ReplayPane
               tabs={data.tabs}
