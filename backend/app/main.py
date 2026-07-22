@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app import models  # noqa: F401 — register ORM models on Base
+from app.api.admin import router as admin_router
 from app.api.export import router as export_router
 from app.api.gym import router as gym_router
 from app.api.qa import router as qa_router
@@ -81,3 +82,4 @@ app.include_router(sessions_router)
 app.include_router(gym_router)
 app.include_router(qa_router)
 app.include_router(export_router)
+app.include_router(admin_router)

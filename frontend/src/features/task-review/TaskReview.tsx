@@ -104,6 +104,9 @@ interface TaskNav {
   onOpenQa: () => void;
   annotatorEmail: string;
   onSetAnnotator: (email: string) => void;
+  queueSet?: "breakers" | "fixtures";
+  onToggleQueue?: () => void;
+  gymAdhoc?: boolean;
 }
 
 function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData; nav: TaskNav; startFresh: boolean; onStartNew: () => void }) {
@@ -719,32 +722,21 @@ export function TaskReview() {
   const [gymError, setGymError] = useState<string | null>(null);
   const [freshNonce, setFreshNonce] = useState(0); // >0 forces a new session on remount ("New annotation")
   const [qaOpen, setQaOpen] = useState(false);
+  const [queueSet, setQueueSet] = useState<"breakers" | "fixtures">("breakers");
+  const [gymAdhoc, setGymAdhoc] = useState(false); // true = loaded off-queue via the Gym picker (not the main queue)
   const [annotatorEmail, setAnnotatorEmail] = useState(() => localStorage.getItem("annotatorEmail") || "annotator@deccan.ai");
 
+  // The review queue: the 85 breakers by default, or the demo fixtures.
   useEffect(() => {
     let alive = true;
-    fetchTasks().then((ts) => { if (alive) setTasks(ts); });
+    fetchTasks(queueSet).then((ts) => { if (alive) { setTasks(ts); setIndex(0); } });
     return () => { alive = false; };
-  }, []);
+  }, [queueSet]);
 
-  const taskId = tasks[index]?.id ?? TASK_ID;
-  // A new task (or entering/exiting the gym) resets the fresh-start intent.
-  useEffect(() => { setFreshNonce(0); }, [taskId, gymData?.task.id]);
-  useEffect(() => {
-    let alive = true;
-    setData(null);
-    fetchReview(taskId).then((r) => {
-      if (!alive) return;
-      setData(r.data);
-      // eslint-disable-next-line no-console
-      console.info(`[annotator] review ${taskId} loaded from ${r.source}`);
-    });
-    return () => { alive = false; };
-  }, [taskId]);
-
-  const loadGym = async (id: string) => {
+  const loadGym = async (id: string, adhoc = false) => {
     setPickerOpen(false);
     setGymError(null);
+    setGymAdhoc(adhoc);
     setGymPhase("queued");
     setGymLoading(id);
     const rv = await runGymReview(id, "oracle", 0, { onStatus: setGymPhase });
@@ -752,6 +744,31 @@ export function TaskReview() {
     if (rv) setGymData(rv);
     else setGymError(id);
   };
+
+  const currentTask = tasks[index];
+  const taskId = currentTask?.id ?? TASK_ID;
+  // A new task (or entering/exiting the gym) resets the fresh-start intent.
+  useEffect(() => { setFreshNonce(0); }, [taskId, gymData?.task.id]);
+  // Load the selected task. Breakers (source "gym") run the agent LIVE in the gym
+  // and load the real trajectory; demo fixtures load a baked review payload.
+  useEffect(() => {
+    let alive = true;
+    setData(null);
+    setGymData(null);
+    if (!tasks.length) return;
+    if (currentTask?.source === "gym") {
+      void loadGym(taskId, false); // a QUEUE breaker — keep the Task N/M pager
+    } else {
+      fetchReview(taskId).then((r) => {
+        if (!alive) return;
+        setData(r.data);
+        // eslint-disable-next-line no-console
+        console.info(`[annotator] review ${taskId} loaded from ${r.source}`);
+      });
+    }
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId, tasks.length]);
 
   const total = tasks.length || 1;
   const effective = gymData ?? data;
@@ -763,10 +780,19 @@ export function TaskReview() {
     onSkip: () => { setGymData(null); setIndex((i) => (i + 1) % total); },
     onBrowseGym: () => setPickerOpen(true),
     gymTaskId: gymData?.task.id ?? null,
-    onExitGym: () => setGymData(null),
+    gymAdhoc,
+    // Exiting an off-queue pick returns to the current queue task (reloading it
+    // if it's a breaker); it does not leave the queue.
+    onExitGym: () => {
+      setGymAdhoc(false);
+      setGymData(null);
+      if (currentTask?.source === "gym") void loadGym(taskId, false);
+    },
     onOpenQa: () => setQaOpen(true),
     annotatorEmail,
     onSetAnnotator: (email) => { setAnnotatorEmail(email); localStorage.setItem("annotatorEmail", email); },
+    queueSet,
+    onToggleQueue: () => { setGymData(null); setQueueSet((q) => (q === "breakers" ? "fixtures" : "breakers")); },
   };
 
   return (
@@ -782,7 +808,7 @@ export function TaskReview() {
       ) : (
         <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: t.n3, fontFamily: t.fontPrimary }}>Loading task…</div>
       )}
-      {pickerOpen && <GymPicker onClose={() => setPickerOpen(false)} onPick={loadGym} />}
+      {pickerOpen && <GymPicker onClose={() => setPickerOpen(false)} onPick={(id) => loadGym(id, true)} />}
       {qaOpen && <QaPanel onClose={() => setQaOpen(false)} reviewer={annotatorEmail} />}
       {gymLoading && <GymLoading taskId={gymLoading} phase={gymPhase} />}
       {gymError && (

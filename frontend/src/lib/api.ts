@@ -2,10 +2,11 @@ import { APP_COLOR } from "./appColors";
 import { reviewFixture } from "../fixtures/reviewPayload";
 import type { ReviewData, ReviewPayload, Step, TaskListItem } from "./types";
 
-/** The task queue (falls back to a single synthetic row offline). */
-export async function fetchTasks(): Promise<TaskListItem[]> {
+/** The task queue. Default = the 85 breakers; `set=fixtures` = the demo
+ *  fixtures. Falls back to a single synthetic row offline. */
+export async function fetchTasks(set: "breakers" | "fixtures" | "all" = "breakers"): Promise<TaskListItem[]> {
   try {
-    const res = await fetch("/api/tasks");
+    const res = await fetch(`/api/tasks?set=${set}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const list = (await res.json()) as TaskListItem[];
     return list.length ? list : fallbackTasks();
@@ -16,7 +17,7 @@ export async function fetchTasks(): Promise<TaskListItem[]> {
 
 function fallbackTasks(): TaskListItem[] {
   const t = reviewFixture.task;
-  return [{ id: t.id, title: t.title, priority: t.priority, meta: t.meta, index: 0, total: 1 }];
+  return [{ id: t.id, title: t.title, priority: t.priority, meta: t.meta, index: 0, total: 1, source: "fixture" }];
 }
 
 export type SessionStatus =

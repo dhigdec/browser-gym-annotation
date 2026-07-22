@@ -305,9 +305,10 @@ def _snapshot(db: Session, s: ReviewSession) -> dict:
             "override": sub.submitted_with_override,
             "at": sub.created_at.isoformat(),
         }
+    task_row = db.get(Task, s.task_id)
     return {
         "sessionId": str(s.id),
-        "taskExternalId": _session_fixture(db, s)["task"]["id"],
+        "taskExternalId": task_row.external_id if task_row else "",
         "status": s.status,
         "rerunFrom": s.rerun_from,
         "reviewedThrough": s.reviewed_through,
@@ -375,15 +376,19 @@ def _branch_for(correction: str, mode: str, from_step: int, fixture: dict) -> tu
 # ---- endpoints -------------------------------------------------------------
 
 
-@router.post("/tasks/{external_id}/sessions")
+@router.post("/tasks/{external_id:path}/sessions")
 def open_session(external_id: str, body: OpenSessionBody, db: Session = Depends(get_db)) -> dict:
     """Resume the annotator's most recent session for this task, or start one.
-    `fresh=true` always starts a NEW session (used to re-annotate a task whose
-    latest session is already submitted)."""
+    Works for both hand-authored fixtures AND gym tasks (the breakers, whose ids
+    contain a '/'). `fresh=true` always starts a NEW session. The annotator's
+    gate progress (status, reviewed_through, suite, corrections) persists here
+    regardless of source, so a breaker review survives a refresh like a fixture."""
     fixture = task_fixture(external_id)
-    if fixture is None:
-        raise HTTPException(status_code=404, detail="task not found")
-    task = _seed_task(db, external_id)
+    task = db.scalar(select(Task).where(Task.external_id == external_id))
+    if task is None:
+        if fixture is None:
+            raise HTTPException(status_code=404, detail="task not found")
+        task = _seed_task(db, external_id)  # lazily seed a known fixture
     ann = _default_annotator(db, body.annotatorEmail)
     existing = None
     if not body.fresh:
@@ -393,10 +398,11 @@ def open_session(external_id: str, body: OpenSessionBody, db: Session = Depends(
             .order_by(ReviewSession.created_at.desc())
         )
     if existing is None:
-        existing = ReviewSession(task_id=task.id, annotator_id=ann.id, status="draft")
+        existing = ReviewSession(task_id=task.id, annotator_id=ann.id, status="draft", source=task.source)
         db.add(existing)
         db.flush()
-        _record_trajectory(db, existing, fixture)  # the auditable task→session→trajectory chain
+        if fixture is not None:
+            _record_trajectory(db, existing, fixture)  # only fixtures carry a baked trajectory
         _audit(db, ann.email, "session.open", str(existing.id), session_id=existing.id)
     db.commit()
     db.refresh(existing)

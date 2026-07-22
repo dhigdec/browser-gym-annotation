@@ -86,6 +86,10 @@ export interface TaskListItem {
   meta: string;
   index: number;
   total: number;
+  /** "gym" tasks (the breakers) load via a live gym run; "fixture" demos load a
+   *  baked review payload. Absent → treated as fixture for back-compat. */
+  source?: "fixture" | "gym";
+  prompt?: string;
 }
 
 // ---- Domain shape (API mapped → colors resolved for rendering) ------------

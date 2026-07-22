@@ -14,6 +14,11 @@ from app.db import SessionLocal, get_db
 
 router = APIRouter(prefix="/api/gym", tags=["gym"])
 
+# The gym benchmark record (trajectory + milestones + reward) is owned by this
+# system identity, kept distinct from any human annotator so it never collides
+# with a person's review-progress session.
+GYM_ORACLE_ANNOTATOR = "gym-oracle@system.local"
+
 
 def _gym_job(fn):
     """Wrap a background gym job so an unknown-task (GymTaskNotFound, raised by the
@@ -58,9 +63,14 @@ def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review
     task.meta = {"constraints": review["task"]["constraints"], "allowedSites": review["task"]["allowedSites"], "runSummary": review["task"]["runSummary"]}
     db.flush()
 
-    ann = db.scalar(select(models.Annotator).where(models.Annotator.email == "annotator@deccan.ai"))
+    # The gym benchmark record belongs to a SYSTEM annotator, NOT the human. This
+    # keeps the human's own review session (opened separately via open_session)
+    # separate and FRESH — otherwise every gym run would create a benchmark_run
+    # session the human then resumes as phantom-reviewed, and their real progress
+    # would be lost on the next run.
+    ann = db.scalar(select(models.Annotator).where(models.Annotator.email == GYM_ORACLE_ANNOTATOR))
     if ann is None:
-        ann = models.Annotator(email="annotator@deccan.ai")
+        ann = models.Annotator(email=GYM_ORACLE_ANNOTATOR)
         db.add(ann)
         db.flush()
 

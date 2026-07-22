@@ -28,7 +28,7 @@ function PagerBox({ dir, onClick, disabled }: { dir: "chevronLeft" | "chevronRig
   );
 }
 
-export function Header({ index, total, onPrev, onNext, onSkip, onBrowseGym, gymTaskId, onExitGym, onOpenQa, annotatorEmail, onSetAnnotator }: { index: number; total: number; onPrev: () => void; onNext: () => void; onSkip: () => void; onBrowseGym: () => void; gymTaskId?: string | null; onExitGym?: () => void; onOpenQa?: () => void; annotatorEmail?: string; onSetAnnotator?: (email: string) => void }) {
+export function Header({ index, total, onPrev, onNext, onSkip, onBrowseGym, gymTaskId, gymAdhoc, onExitGym, onOpenQa, annotatorEmail, onSetAnnotator, queueSet, onToggleQueue }: { index: number; total: number; onPrev: () => void; onNext: () => void; onSkip: () => void; onBrowseGym: () => void; gymTaskId?: string | null; gymAdhoc?: boolean; onExitGym?: () => void; onOpenQa?: () => void; annotatorEmail?: string; onSetAnnotator?: (email: string) => void; queueSet?: "breakers" | "fixtures"; onToggleQueue?: () => void }) {
   const mono = { fontFamily: t.fontMono } as const;
   const initial = (annotatorEmail || "?").trim().charAt(0).toUpperCase() || "?";
   return (
@@ -55,26 +55,33 @@ export function Header({ index, total, onPrev, onNext, onSkip, onBrowseGym, gymT
         <span style={{ color: t.n1, fontWeight: weight.semibold }}>Tasking</span>
       </nav>
       <Rule />
-      {gymTaskId ? (
+      {gymTaskId && gymAdhoc ? (
+        // An off-queue task loaded ad-hoc via the Gym picker — not part of the queue.
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: "0.8125rem", fontWeight: weight.semibold, color: t.n1, whiteSpace: "nowrap" }}>
             Gym · <span style={mono}>{gymTaskId}</span>
           </span>
-          <span onClick={onExitGym} style={{ marginLeft: 4, fontSize: "0.78125rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer" }}>Samples</span>
+          <span onClick={onExitGym} style={{ marginLeft: 4, fontSize: "0.78125rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer" }}>Back to queue</span>
         </div>
       ) : (
+        // The main queue — breakers or demo fixtures — navigated by the pager.
         <div style={{ display: "flex", alignItems: "center", gap: 8 }} title="One task at a time">
           <PagerBox dir="chevronLeft" onClick={onPrev} disabled={index <= 0} />
           <span style={{ fontSize: "0.8125rem", fontWeight: weight.semibold, color: t.n1, whiteSpace: "nowrap" }}>
-            Task <span style={mono}>{index + 1}</span> of <span style={mono}>{total}</span>
+            {queueSet === "fixtures" ? "Demo" : "Breaker"} <span style={mono}>{index + 1}</span> of <span style={mono}>{total}</span>
           </span>
           <PagerBox dir="chevronRight" onClick={onNext} disabled={index >= total - 1} />
           <span onClick={onSkip} style={{ marginLeft: 4, fontSize: "0.78125rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer" }}>Skip</span>
         </div>
       )}
       <span style={{ width: 1, height: 22, background: t.n7 }} />
+      {onToggleQueue && (
+        <span onClick={onToggleQueue} title="Switch between the breaker queue and the demo fixtures" style={{ fontSize: "0.78125rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer", whiteSpace: "nowrap" }}>
+          {queueSet === "breakers" ? "Demos" : "Breakers"}
+        </span>
+      )}
       <span onClick={onBrowseGym} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: "0.78125rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer", whiteSpace: "nowrap" }}>
-        <Icon name="swap" size={14} /> Gym tasks
+        <Icon name="swap" size={14} /> All gym tasks
       </span>
       {onOpenQa && (
         <span onClick={onOpenQa} title="Multi-annotator QA — agreement + adjudication" style={{ fontSize: "0.78125rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer", whiteSpace: "nowrap" }}>
