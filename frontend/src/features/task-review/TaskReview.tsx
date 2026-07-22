@@ -108,6 +108,9 @@ interface TaskNav {
   queueSet?: "breakers" | "fixtures";
   onToggleQueue?: () => void;
   gymAdhoc?: boolean;
+  // Editing the prompt re-drives the WHOLE run from the initial state under the
+  // new instruction (gym tasks only), then a fresh review of that run.
+  onPromptRerun?: (prompt: string) => Promise<void>;
 }
 
 function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData; nav: TaskNav; startFresh: boolean; onStartNew: () => void }) {
@@ -406,7 +409,14 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
               onStepTo={(i) => dispatch({ t: "stepTo", i })}
             />
           </main>
-          <RightPanel task={promptOverride ? { ...data.task, prompt: promptOverride } : data.task} summary={runSummary(state)} onSavePrompt={setPromptOverride} />
+          <RightPanel
+            task={promptOverride ? { ...data.task, prompt: promptOverride } : data.task}
+            summary={runSummary(state)}
+            // Gym: saving a new prompt re-drives the WHOLE run under it (then a
+            // fresh review). Fixtures: just override the displayed prompt.
+            onSavePrompt={data.source === "gym" && nav.onPromptRerun ? (text) => { void nav.onPromptRerun!(text); } : setPromptOverride}
+            rerunsOnSave={data.source === "gym" && !!nav.onPromptRerun}
+          />
         </div>
         {/* The action trace sits full-width UNDER the browser pane so the replay
             frame can own the full height of the row (a real tab-sized viewport). */}
@@ -828,6 +838,18 @@ export function TaskReview() {
     onSetAnnotator: (email) => { setAnnotatorEmail(email); localStorage.setItem("annotatorEmail", email); },
     queueSet,
     onToggleQueue: () => { setGymData(null); setQueueSet((q) => (q === "breakers" ? "fixtures" : "breakers")); },
+    // Prompt edit → re-drive the WHOLE run from the initial state under the new
+    // brief (a live gpt-5.1 run), then remount a FRESH review of that new run.
+    onPromptRerun: currentTask?.source === "gym" ? async (prompt: string) => {
+      setGymError(null);
+      setGymAdhoc(false);
+      setGymPhase("queued");
+      setGymLoading(taskId);
+      const rv = await runGymReview(taskId, "openai", 0, { onStatus: setGymPhase, brief: prompt });
+      setGymLoading(null);
+      if (rv) { setGymData(rv); setFreshNonce((n) => n + 1); } // new trajectory + fresh session
+      else setGymError(taskId);
+    } : undefined,
   };
 
   return (

@@ -364,9 +364,10 @@ export async function resumeGymReview(body: {
   return post<ResumeResult>("/api/gym/resume", body);
 }
 
-/** Enqueue a real gym run; returns the jobId to poll, or null if unreachable. */
-export async function startGymReview(taskId: string, agent = "oracle", seed = 0): Promise<string | null> {
-  const out = await post<{ jobId: string }>(`/api/gym/tasks/${taskId}/run-review`, { agent, seed });
+/** Enqueue a real gym run; returns the jobId to poll, or null if unreachable.
+ *  `brief` (annotator prompt edit) re-drives the whole run under the new prompt. */
+export async function startGymReview(taskId: string, agent = "oracle", seed = 0, brief?: string): Promise<string | null> {
+  const out = await post<{ jobId: string }>(`/api/gym/tasks/${taskId}/run-review`, { agent, seed, ...(brief ? { brief } : {}) });
   return out?.jobId ?? null;
 }
 
@@ -388,9 +389,9 @@ export async function runGymReview(
   taskId: string,
   agent = "oracle",
   seed = 0,
-  opts?: { onStatus?: (s: GymJob["status"]) => void; intervalMs?: number; timeoutMs?: number },
+  opts?: { onStatus?: (s: GymJob["status"]) => void; intervalMs?: number; timeoutMs?: number; brief?: string },
 ): Promise<ReviewData | null> {
-  const jobId = await startGymReview(taskId, agent, seed);
+  const jobId = await startGymReview(taskId, agent, seed, opts?.brief);
   if (!jobId) return null;
   const interval = opts?.intervalMs ?? 1500;
   const deadline = Date.now() + (opts?.timeoutMs ?? 300_000);

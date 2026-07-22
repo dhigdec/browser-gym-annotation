@@ -49,8 +49,10 @@ def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review
         task = models.Task(external_id=task_id, source="gym")
         db.add(task)
     task.source = "gym"
-    task.title = review["task"]["title"]
-    task.prompt = review["task"]["prompt"]
+    task.title = task.title or review["task"]["title"]
+    # Fill the CANONICAL prompt once (first review); never clobber it — a per-run
+    # annotator prompt edit (brief override) must not rewrite the shared task def.
+    task.prompt = task.prompt or review["task"]["prompt"]
     task.category = t.get("task_category") or ""
     task.difficulty = (t.get("task_difficulty") or "").lower()
     task.priority = review["task"]["priority"]
@@ -161,14 +163,16 @@ def gym_run(body: RunBody) -> dict:
 class RunReviewBody(BaseModel):
     agent: str = "oracle"
     seed: int = 0
+    brief: str | None = None  # annotator prompt edit → re-drive the whole run under this brief
 
 
 @_gym_job
-def _run_review_job(task_id: str, agent: str, seed: int) -> dict:
+def _run_review_job(task_id: str, agent: str, seed: int, brief: str | None = None) -> dict:
     """The slow work: run a real agent on a gym task, persist it as a full DB
     record (task + seed state → session → trajectory + milestones), and return
-    the review payload. Runs on a background thread (opens its own DB session)."""
-    r = gym_client.run_agent(task_id, agent, seed)
+    the review payload. Runs on a background thread (opens its own DB session).
+    `brief` (annotator prompt edit) re-drives the whole run under the new prompt."""
+    r = gym_client.run_agent(task_id, agent, seed, brief=brief)
     if r is None:
         raise jobs.JobFailure("gym unreachable or run failed")
     if not (r.get("trajectory") or {}).get("steps"):
@@ -192,7 +196,7 @@ def gym_run_review(task_id: str, body: RunReviewBody) -> dict:
     """M8/M9 — enqueue a real agent run + persist as a background job; returns a
     jobId to poll. The browser-driving run is slow (up to 260s), so it runs OFF
     the request path so a proxy/read timeout can't drop a finished review."""
-    job = jobs.store.submit("run-review", _run_review_job, task_id, body.agent, body.seed)
+    job = jobs.store.submit("run-review", _run_review_job, task_id, body.agent, body.seed, body.brief)
     return {"jobId": job.id, "status": job.status}
 
 

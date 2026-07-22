@@ -82,10 +82,14 @@ def verify(step: int = 0) -> dict | None:
     return _req("POST", "/_harness/verify", {"step": step})
 
 
-def run_agent(task_id: str, agent: str = "oracle", seed: int = 0) -> dict | None:
+def run_agent(task_id: str, agent: str = "oracle", seed: int = 0, brief: str | None = None) -> dict | None:
     """Trigger a full agent run in the gym (reset → drive → verify). Slow — the
-    gym drives a real browser — so allow a generous timeout."""
-    return _req("POST", "/_harness/run_agent", {"agent": agent, "task_id": task_id, "seed": seed}, timeout=260)
+    gym drives a real browser — so allow a generous timeout. `brief` overrides the
+    task's instruction (annotator prompt edit → a fresh run under the new prompt)."""
+    body: dict = {"agent": agent, "task_id": task_id, "seed": seed}
+    if brief:
+        body["brief"] = brief
+    return _req("POST", "/_harness/run_agent", body, timeout=260)
 
 
 def load_state(task_id: str, seed: int, state: dict, step: int | None = None) -> dict | None:

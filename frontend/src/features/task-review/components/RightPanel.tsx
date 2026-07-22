@@ -19,11 +19,18 @@ function metricColor(tone: Metric["tone"]) {
   return t.n0;
 }
 
-export function RightPanel({ task, summary, onSavePrompt }: { task: Task; summary: Metric[]; onSavePrompt?: (text: string) => void }) {
+export function RightPanel({ task, summary, onSavePrompt, rerunsOnSave }: { task: Task; summary: Metric[]; onSavePrompt?: (text: string) => void; rerunsOnSave?: boolean }) {
   const [editingPrompt, setEditingPrompt] = useState(false);
   const [promptText, setPromptText] = useState(task.prompt);
   const startEdit = () => { setPromptText(task.prompt); setEditingPrompt(true); };
-  const savePrompt = () => { onSavePrompt?.(promptText.trim() || task.prompt); setEditingPrompt(false); };
+  const savePrompt = () => {
+    const next = promptText.trim() || task.prompt;
+    // A gym prompt edit re-drives the whole run — confirm the (slow, destructive-
+    // to-the-current-review) action so it isn't triggered by accident.
+    if (rerunsOnSave && next !== task.prompt && !window.confirm("Re-run the whole task under this new prompt? The current review will be replaced by a fresh run.")) return;
+    onSavePrompt?.(next);
+    setEditingPrompt(false);
+  };
 
   // Trailing agent id in mono (design §4.1: "nav-agent-v4" in --font-mono).
   const metaParts = task.meta.split(" · ");
@@ -57,9 +64,12 @@ export function RightPanel({ task, summary, onSavePrompt }: { task: Task; summar
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <textarea value={promptText} onChange={(e) => setPromptText(e.target.value)} autoFocus
                 style={{ width: "100%", boxSizing: "border-box", minHeight: 128, resize: "vertical", padding: "10px 12px", border: `1px solid ${t.primary6}`, borderRadius: t.radiusLg, fontFamily: t.fontPrimary, fontSize: "0.8125rem", lineHeight: 1.55, color: t.n0, outline: "none" }} />
+              {rerunsOnSave && (
+                <span style={{ fontSize: "0.72rem", color: t.n3, lineHeight: 1.5 }}>Saving re-drives the whole task under the new prompt (a live agent run), then a fresh review.</span>
+              )}
               <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
                 <Button variant="secondary" onClick={() => setEditingPrompt(false)}>Cancel</Button>
-                <Button onClick={savePrompt}>Save prompt</Button>
+                <Button onClick={savePrompt}>{rerunsOnSave ? "Save & re-run" : "Save prompt"}</Button>
               </div>
             </div>
           ) : (

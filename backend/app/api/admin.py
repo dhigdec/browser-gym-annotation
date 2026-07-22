@@ -2,7 +2,7 @@
 environment (prod sets ENV=prod + auto_create_all=false via Alembic), so a
 destructive reset can never fire against a real deployment."""
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app import models
@@ -33,6 +33,10 @@ def reset_sessions(db: Session = Depends(get_db)) -> dict:
     # Deleting sessions cascades to trajectory / verifier_suite (→verifier,
     # benchmark_run) / submission / trajectory_branch.
     db.execute(delete(models.ReviewSession))
+    # Heal any per-run task fill (e.g. a prompt-edit brief that a pre-fix build
+    # wrote onto the canonical row): clear gym prompts so the next original review
+    # re-fills them. The task LIST reads breakers.json, so this is display-safe.
+    db.execute(update(models.Task).where(models.Task.source == "gym").values(prompt=""))
     db.commit()
     return {
         "ok": True,
