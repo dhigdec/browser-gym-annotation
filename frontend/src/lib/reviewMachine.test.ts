@@ -75,9 +75,10 @@ describe("gym resume", () => {
 });
 
 describe("gate chain", () => {
-  it("parks on the error step, unapproved", () => {
+  it("opens at step 1 with nothing reviewed, unapproved", () => {
     const s = makeInitialState(data);
-    expect(s.step).toBe(2); // error at index 2
+    expect(s.step).toBe(0); // always start at the first step
+    expect(s.verifiedThrough).toBe(0);
     expect(s.stepsApproved).toBe(false);
     expect(sessionStatus(s)).toBe("draft");
   });
@@ -169,7 +170,7 @@ describe("step status (spec §2.3)", () => {
 
 describe("hydrate + persistence projections", () => {
   it("restores the gate chain and results from a persisted session", () => {
-    const s = reducer(makeInitialState(data), { t: "hydrate", status: "benchmark_run", rerunFrom: null, results: { v1: "pass", v2: "pass" } });
+    const s = reducer(makeInitialState(data), { t: "hydrate", status: "benchmark_run", rerunFrom: null, reviewedThrough: 0, results: { v1: "pass", v2: "pass" } });
     expect(s.stepsApproved).toBe(true);
     expect(s.verifiersGenerated).toBe(true);
     expect(s.benchmarkRun).toBe(true);

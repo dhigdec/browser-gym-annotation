@@ -7,16 +7,15 @@ function errorIndex(steps: Step[]): number {
   return i >= 0 ? i : Math.max(0, steps.length - 1);
 }
 
-/** Seed the review state from a loaded payload — parked on the error step,
- *  with the steps before it already reviewed (mirrors the design). */
+/** Seed the review state from a loaded payload — start at step 1, with nothing
+ *  reviewed yet, so the annotator walks the run from the beginning. */
 export function makeInitialState(data: ReviewData): ReviewState {
-  const ei = errorIndex(data.steps);
   return {
     data,
-    step: ei,
-    activeTabId: data.steps[ei]?.tabId ?? data.tabs[0]?.id ?? "",
+    step: 0,
+    activeTabId: data.steps[0]?.tabId ?? data.tabs[0]?.id ?? "",
     playing: false,
-    verifiedThrough: ei,
+    verifiedThrough: 0,
     stepsApproved: false,
     verifiersGenerated: false,
     benchmarkRun: false,
@@ -150,20 +149,19 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
       // the annotator's progress survives a refresh.
       const base = { ...s, rerunFrom: a.rerunFrom };
       const vs = visibleSteps(base);
-      const last = Math.max(0, vs.length - 1);
       const approved = a.status !== "draft";
-      const step = a.rerunFrom != null ? errorIndex(base.data.steps) : s.step;
       return {
         ...base,
         stepsApproved: approved,
         verifiersGenerated: ["verifiers_generated", "benchmark_run", "submitted"].includes(a.status),
         benchmarkRun: ["benchmark_run", "submitted"].includes(a.status),
         submitted: a.status === "submitted",
-        // Restore the granular review progress from the DB (never below the
-        // initial pre-review, and everything once the steps were approved).
+        // Restore the granular review progress from the DB (everything once the
+        // steps were approved).
         verifiedThrough: Math.max(s.verifiedThrough, a.reviewedThrough, approved ? vs.length : 0),
-        step: Math.min(step, last),
-        activeTabId: vs[Math.min(step, last)]?.tabId ?? s.activeTabId,
+        // Always open at step 1 (never re-park on the error step).
+        step: 0,
+        activeTabId: vs[0]?.tabId ?? s.activeTabId,
         results: a.results,
       };
     }
