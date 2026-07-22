@@ -26,14 +26,27 @@ export type SessionStatus =
   | "benchmark_run"
   | "submitted";
 
+export interface PersistedVerifier {
+  id: string;
+  level: string;
+  assertion: string;
+  code: string;
+  check?: Record<string, unknown> | null;
+  failsUntilCorrected?: boolean;
+  placeholder?: boolean;
+  addedByHuman?: boolean;
+}
+
 export interface SessionSnapshot {
   sessionId: string;
   taskExternalId: string;
   status: SessionStatus;
   rerunFrom: number | null;
   reviewedThrough: number;
-  suite: { suiteId: string; version: number; verifiers: unknown[] } | null;
-  lastBenchmark: { reward: number; results: Record<string, unknown>; at: string } | null;
+  suite: { suiteId: string; version: number; verifiers: PersistedVerifier[] } | null;
+  lastBenchmark: { reward: number; results: Record<string, unknown>; overridden?: string[]; at: string } | null;
+  // The persisted correction branch, so the fork restores exactly on reload.
+  branch: { fromStep: number; mode: string; steps: Step[] } | null;
   submission: { reward: number; kind: string; override: boolean; at: string } | null;
 }
 

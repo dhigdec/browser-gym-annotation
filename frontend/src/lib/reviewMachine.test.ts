@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  allVerifiers,
   isResolved,
   isVerified,
   makeInitialState,
@@ -118,6 +119,48 @@ describe("correction", () => {
     expect(s.rerunMode).toBe("agent");
     const steps = visibleSteps(s);
     expect(steps[steps.length - 1].description).toBe("agent step");
+  });
+
+  it("forks at the correction point (not the error) and never overruns the playhead", () => {
+    // Correct a LATE step with a SHORT branch — used to crash (step past array end).
+    const branch = [{ idx: 2, type: "click" as const, tabId: "shop", description: "b" }];
+    const s = reducer(makeInitialState(data), { t: "correctAndRerun", fromStep: 1, branch, mode: "agent" });
+    const steps = visibleSteps(s);
+    expect(steps.length).toBe(2); // first 1 original step + 1 branch step (fork at rerunFrom, not errorIndex)
+    expect(s.step).toBeLessThan(steps.length); // clamped — current is always defined
+    expect(steps[s.step]).toBeDefined();
+    // idx values stay unique + contiguous (no duplicate React keys)
+    expect(steps.map((x) => x.idx)).toEqual([1, 2]);
+  });
+});
+
+describe("hydrate restores the full persisted state (DB round-trip)", () => {
+  it("restores the correction branch, mode, added/edited verifiers, and overrides", () => {
+    const branchTail = [{ idx: 4, type: "submit" as const, tabId: "shop", description: "restored branch step" }];
+    const added = [{ id: "add-9", level: "safety" as const, assertion: "human", code: "c" }];
+    const s = reducer(makeInitialState(data), {
+      t: "hydrate",
+      status: "benchmark_run",
+      rerunFrom: 3,
+      reviewedThrough: 4,
+      results: { v1: "fail" },
+      branchTail,
+      rerunMode: "agent",
+      added,
+      edits: { v1: { assertion: "edited", code: "c1" } },
+      overrides: { v1: true },
+    });
+    // branch restored -> visibleSteps uses the persisted branch, not correctedTail
+    const steps = visibleSteps(s);
+    expect(steps[steps.length - 1].description).toBe("restored branch step");
+    expect(s.rerunMode).toBe("agent");
+    // added + edited verifiers restored
+    expect(allVerifiers(s).some((v) => v.id === "add-9")).toBe(true);
+    expect(allVerifiers(s).find((v) => v.id === "v1")?.assertion).toBe("edited");
+    // override restored -> the failing v1 reads as pass (human-attested)
+    expect(verifierState(s, allVerifiers(s).find((v) => v.id === "v1")!)).toBe("pass");
+    // reviewed count agrees with the restored branch length (no 13/15 desync)
+    expect(s.verifiedThrough).toBe(steps.length);
   });
 });
 

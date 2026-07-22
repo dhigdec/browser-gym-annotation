@@ -135,24 +135,52 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
     openSession(data.task.id, { fresh: startFresh, annotatorEmail: nav.annotatorEmail }).then((snap) => {
       if (!alive || !snap) return;
       setSessionId(snap.sessionId);
-      // Seed the sync refs to the restored state so we don't echo it back.
-      statusRef.current = snap.status;
-      rerunRef.current = snap.rerunFrom;
-      reviewedRef.current = snap.reviewedThrough;
-      submittedRef.current = snap.status === "submitted";
       const results = (snap.lastBenchmark?.results as Record<string, string>) ?? {};
-      const restored = reducer(makeInitialState(data), {
-        t: "hydrate",
+      // Reconstruct the annotator's AUTHORED suite from the persisted latest
+      // version: verifiers the human added, plus edits to generated ones. Without
+      // this the suite silently reverts to the generated set on reload (and the
+      // next Run would overwrite the DB with the reverted suite).
+      const origById = new Map(data.verifiers.map((v) => [v.id, v]));
+      const added: Verifier[] = [];
+      const edits: Record<string, { assertion: string; code: string }> = {};
+      for (const pv of snap.suite?.verifiers ?? []) {
+        const orig = origById.get(pv.id);
+        if (!orig || pv.addedByHuman) {
+          added.push({ id: pv.id, level: pv.level as Verifier["level"], assertion: pv.assertion, code: pv.code, check: pv.check ?? undefined, placeholder: pv.placeholder, failsUntilCorrected: pv.failsUntilCorrected });
+        } else if (pv.assertion !== orig.assertion || pv.code !== orig.code) {
+          edits[pv.id] = { assertion: pv.assertion, code: pv.code };
+        }
+      }
+      // Human attestations (overrides) from the last run — so reward can't drop
+      // 1->0 when the next run silently omits them.
+      const overrides: Record<string, boolean> = {};
+      for (const id of snap.lastBenchmark?.overridden ?? []) overrides[id] = true;
+      // The persisted correction branch — restores the fork's exact steps/count.
+      const branchTail = snap.branch ? snap.branch.steps : null;
+      const rerunMode = snap.branch ? snap.branch.mode : null;
+      const hydrateAction = {
+        t: "hydrate" as const,
         status: snap.status,
         rerunFrom: snap.rerunFrom,
         reviewedThrough: snap.reviewedThrough,
         results,
-      });
+        branchTail,
+        rerunMode,
+        added,
+        edits,
+        overrides,
+      };
+      const restored = reducer(makeInitialState(data), hydrateAction);
+      // Seed the sync refs to the RESTORED state so we don't echo it back.
+      statusRef.current = snap.status;
+      rerunRef.current = snap.rerunFrom;
+      reviewedRef.current = restored.verifiedThrough;
+      submittedRef.current = snap.status === "submitted";
       suiteSigRef.current = restored.verifiersGenerated
         ? JSON.stringify(verifierPayloads(restored))
         : "";
-      if (snap.status !== "draft" || snap.rerunFrom != null || snap.reviewedThrough > 0) {
-        dispatch({ t: "hydrate", status: snap.status, rerunFrom: snap.rerunFrom, reviewedThrough: snap.reviewedThrough, results });
+      if (snap.status !== "draft" || snap.rerunFrom != null || snap.reviewedThrough > 0 || snap.suite != null || snap.branch != null) {
+        dispatch(hydrateAction);
       }
     });
     return () => {
@@ -195,12 +223,16 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
     }
   }, [sessionId, status]);
 
-  // Correction fork — persist the re-run point (correcting re-locks Section 2).
+  // Correction fork — persist the re-run point AND the re-lock together. A
+  // correction re-locks Section 2 to 'draft'; writing both atomically means a
+  // failed /rerun can't leave the DB status contradicting the persisted fork
+  // (which would reload with Section 2 wrongly unlocked / submittable).
   useEffect(() => {
     if (!sessionId || state.rerunFrom === rerunRef.current) return;
     rerunRef.current = state.rerunFrom;
     if (state.rerunFrom != null) {
-      void patchSession(sessionId, { rerunFrom: state.rerunFrom });
+      statusRef.current = "draft"; // keep the status effect from firing a duplicate PATCH
+      void patchSession(sessionId, { rerunFrom: state.rerunFrom, status: "draft" });
     }
   }, [sessionId, state.rerunFrom]);
 

@@ -2,11 +2,6 @@ import type { MeterState } from "../ds/Meter";
 import type { VerifierLevel } from "../ds/tokens";
 import type { Metric, ReviewData, ReviewState, Step, Verifier } from "./types";
 
-function errorIndex(steps: Step[]): number {
-  const i = steps.findIndex((s) => s.type === "error");
-  return i >= 0 ? i : Math.max(0, steps.length - 1);
-}
-
 /** Seed the review state from a loaded payload — start at step 1, with nothing
  *  reviewed yet, so the annotator walks the run from the beginning. */
 export function makeInitialState(data: ReviewData): ReviewState {
@@ -58,7 +53,19 @@ export type Action =
   | { t: "submit" }
   | { t: "submitConfirmed"; reward: number; kind: string }
   | { t: "submitFailed"; error: string }
-  | { t: "hydrate"; status: PersistStatus; rerunFrom: number | null; reviewedThrough: number; results: Record<string, string> };
+  | {
+      t: "hydrate";
+      status: PersistStatus;
+      rerunFrom: number | null;
+      reviewedThrough: number;
+      results: Record<string, string>;
+      // Restored from the DB so the fork + suite + attestations survive a refresh.
+      branchTail?: Step[] | null;
+      rerunMode?: string | null;
+      added?: Verifier[];
+      edits?: Record<string, { assertion: string; code: string }>;
+      overrides?: Record<string, boolean>;
+    };
 
 export type PersistStatus =
   | "draft"
@@ -100,11 +107,12 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
       // Correcting a step re-forks the trace and RE-LOCKS Section 2 entirely
       // (spec §3.25): the annotator must re-approve, re-generate, and re-run.
       // The re-run steps are auto-marked reviewed (Reviewed N/N, spec §2.3).
-      // The branch length is variable (a live agent may emit any number of
-      // steps), so recompute the total from the incoming branch.
-      const ei = errorIndex(s.data.steps);
+      // Fork at the ACTUAL correction point: keep the first `fromStep` steps and
+      // append the branch (the backend re-indexes it contiguously from
+      // fromStep+1), so the count/total agree and the playhead can never overrun
+      // the rebuilt array (which crashed the reviewer when correcting a late step).
       const tail = a.branch ?? s.data.correctedTail;
-      const newTotal = ei + 1 + tail.length;
+      const newTotal = a.fromStep + tail.length;
       return {
         ...s,
         rerunFrom: a.fromStep,
@@ -117,7 +125,7 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
         results: {},
         overrides: {},
         submitted: false,
-        step: a.fromStep - 1,
+        step: Math.min(Math.max(a.fromStep - 1, 0), newTotal - 1),
       };
     }
     case "setLevel":
@@ -145,9 +153,19 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
     case "submitFailed":
       return { ...s, submitted: false, submitError: a.error };
     case "hydrate": {
-      // Restore the gate chain + correction fork from a persisted session so
-      // the annotator's progress survives a refresh.
-      const base = { ...s, rerunFrom: a.rerunFrom };
+      // Restore the gate chain, correction fork, authored suite, and human
+      // attestations from a persisted session so the annotator's work survives a
+      // refresh EXACTLY as they left it. branchTail must be applied before
+      // visibleSteps is read (it determines the fork's step count).
+      const base = {
+        ...s,
+        rerunFrom: a.rerunFrom,
+        branchTail: a.branchTail ?? s.branchTail,
+        rerunMode: a.rerunMode ?? s.rerunMode,
+        added: a.added ?? s.added,
+        edits: a.edits ?? s.edits,
+        overrides: a.overrides ?? s.overrides,
+      };
       const vs = visibleSteps(base);
       const approved = a.status !== "draft";
       return {
@@ -157,7 +175,8 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
         benchmarkRun: ["benchmark_run", "submitted"].includes(a.status),
         submitted: a.status === "submitted",
         // Restore the granular review progress from the DB (everything once the
-        // steps were approved).
+        // steps were approved). With branchTail restored, vs.length equals the
+        // count reviewed_through was written against, so they can't disagree.
         verifiedThrough: Math.max(s.verifiedThrough, a.reviewedThrough, approved ? vs.length : 0),
         // Always open at step 1 (never re-park on the error step).
         step: 0,
@@ -174,10 +193,13 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
 
 export function visibleSteps(s: ReviewState): Step[] {
   if (s.rerunFrom == null) return s.data.steps;
-  const ei = errorIndex(s.data.steps);
   // Prefer the server-computed branch (M6); fall back to the offline fixture tail.
   const tail = s.branchTail ?? s.data.correctedTail;
-  return [...s.data.steps.slice(0, ei + 1), ...tail];
+  // Fork at the ACTUAL correction point (rerunFrom), not the error step: keep the
+  // first `rerunFrom` original steps, then the branch (which the backend
+  // re-indexes contiguously from rerunFrom+1). This keeps idx values unique and
+  // makes the slice, fork divider, status circles, and React keys all agree.
+  return [...s.data.steps.slice(0, s.rerunFrom), ...tail];
 }
 
 export function runSummary(s: ReviewState): Metric[] {

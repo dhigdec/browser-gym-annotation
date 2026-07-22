@@ -256,10 +256,13 @@ def _snapshot(db: Session, s: ReviewSession) -> dict:
             "version": suite.version,
             "verifiers": [
                 {
-                    "id": str(v.id),
+                    # The AUTHORING id (ext_id), not the DB PK, so the client can
+                    # match restored verifiers back to the generated set (edit vs add).
+                    "id": v.ext_id,
                     "level": v.level,
                     "assertion": v.assertion,
                     "code": v.code,
+                    "check": v.check_ir,
                     "failsUntilCorrected": v.fails_until_corrected,
                     "placeholder": v.placeholder,
                     "addedByHuman": v.added_by_human,
@@ -275,7 +278,20 @@ def _snapshot(db: Session, s: ReviewSession) -> dict:
             .order_by(BenchmarkRun.created_at.desc())
         )
         if br is not None:
-            last_bench = {"reward": br.reward, "results": br.results, "at": br.created_at.isoformat()}
+            # `overridden` lets the client restore human attestations on reload,
+            # so the reward can't silently drop 1->0 when the next run omits them.
+            last_bench = {"reward": br.reward, "results": br.results, "overridden": br.overridden or [], "at": br.created_at.isoformat()}
+    # The latest correction branch — so the fork (steps, count, provenance) is
+    # restored EXACTLY as the annotator left it, instead of the client falling
+    # back to the fixture's authored tail.
+    branch = db.scalar(
+        select(TrajectoryBranch)
+        .where(TrajectoryBranch.session_id == s.id)
+        .order_by(TrajectoryBranch.created_at.desc())
+    )
+    branch_out = None
+    if branch is not None:
+        branch_out = {"fromStep": branch.from_step, "mode": branch.mode, "steps": (branch.steps or {}).get("steps", [])}
     sub = db.scalar(
         select(Submission)
         .where(Submission.session_id == s.id)
@@ -297,6 +313,7 @@ def _snapshot(db: Session, s: ReviewSession) -> dict:
         "reviewedThrough": s.reviewed_through,
         "suite": suite_out,
         "lastBenchmark": last_bench,
+        "branch": branch_out,
         "submission": submission,
     }
 
