@@ -128,13 +128,19 @@ def to_review(run: dict, task_id: str, agent: str) -> dict:
     title = task_id.split("/")[-1].replace("_", " ").strip().capitalize()
     reward = 1 if vr.get("success") else 0
     errors = sum(1 for s in steps if s["type"] == "error")
+    # Show the concrete MODEL (agent_name = "openai[gpt-5.5]" → "gpt-5.5") so the
+    # annotator sees which model produced the run, not just the agent family.
+    _an = t.get("agent_name") or agent
+    _mm = re.search(r"\[([^\]]+)\]", _an)
+    _inner = _mm.group(1).strip() if _mm else ""
+    agent_label = _inner if _inner and _inner.lower() not in ("default", "none") else agent
 
     return {
         "task": {
             "id": task_id, "priority": priority, "title": title,
-            "meta": f"{t.get('task_category', 'gym')} · {agent}",
+            "meta": f"{t.get('task_category', 'gym')} · {agent_label}",
             "prompt": t.get("task_brief") or "",
-            "startState": {"summary": f"Gym task · {agent} run · seed {run.get('seed', 0)}", "url": t.get("initial_url") or ""},
+            "startState": {"summary": f"Gym task · {agent_label} run · seed {run.get('seed', 0)}", "url": t.get("initial_url") or ""},
             "constraints": [c for c in (diff.capitalize(), t.get("task_category")) if c],
             "allowedSites": [{"host": tb["host"], "app": tb["app"]} for tb in tabs],
             "runSummary": [

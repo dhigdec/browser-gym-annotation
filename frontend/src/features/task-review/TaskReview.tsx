@@ -784,7 +784,10 @@ export function TaskReview() {
     setGymAdhoc(adhoc);
     setGymPhase("queued");
     setGymLoading(id);
-    const rv = await runGymReview(id, "oracle", 0, { onStatus: setGymPhase });
+    // Open every task with a LIVE MODEL run (gpt-5.5) — the annotator reviews the
+    // model's actual (often breaking) attempt, finds the bad step, corrects it,
+    // and the model re-drives from there. (Was the oracle gold path.)
+    const rv = await runGymReview(id, "openai", 0, { onStatus: setGymPhase });
     setGymLoading(null);
     if (rv) setGymData(rv);
     else setGymError(id);
@@ -869,8 +872,10 @@ export function TaskReview() {
       {qaOpen && <QaPanel onClose={() => setQaOpen(false)} reviewer={annotatorEmail} />}
       {gymLoading && <GymLoading taskId={gymLoading} phase={gymPhase} />}
       {gymError && (
-        <div onClick={() => setGymError(null)} style={{ position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", background: t.redLite, color: t.redDark, border: `1px solid color-mix(in srgb, ${t.red} 42%, ${t.n9})`, padding: "10px 16px", borderRadius: t.radiusLg, fontSize: "0.84rem", fontWeight: weight.semibold, zIndex: 70, cursor: "pointer", fontFamily: t.fontPrimary }}>
-          Couldn't run <span style={{ fontFamily: t.fontMono }}>{gymError}</span> — the gym may be down or the task has no oracle solver. Tap to dismiss.
+        <div style={{ position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 16, background: t.redLite, color: t.redDark, border: `1px solid color-mix(in srgb, ${t.red} 42%, ${t.n9})`, padding: "10px 16px", borderRadius: t.radiusLg, fontSize: "0.84rem", fontWeight: weight.semibold, zIndex: 70, fontFamily: t.fontPrimary, boxShadow: t.shadowLg }}>
+          <span>Couldn't run <span style={{ fontFamily: t.fontMono }}>{gymError}</span> — the model produced no run (it may be rate-limited, or the gym is down).</span>
+          <span onClick={() => { const id = gymError; setGymError(null); if (id) void loadGym(id, gymAdhoc); }} style={{ cursor: "pointer", textDecoration: "underline", whiteSpace: "nowrap" }}>Retry</span>
+          <span onClick={() => setGymError(null)} style={{ cursor: "pointer", opacity: 0.7 }}>✕</span>
         </div>
       )}
     </>
