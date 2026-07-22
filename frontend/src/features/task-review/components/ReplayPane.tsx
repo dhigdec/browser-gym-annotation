@@ -220,13 +220,18 @@ export function ReplayPane({
           <div style={{ fontSize: "0.72rem", color: t.n3, flexShrink: 0, whiteSpace: "nowrap" }}>captured frame</div>
         </div>
         <div style={{ position: "relative", flex: 1, minHeight: 0, marginTop: 8 }}>
-          {/* The captured page fills the frame WIDTH and scrolls vertically inside
-              this box (like a browser tab). The step controls below are siblings,
-              so they stay pinned over the scroll instead of drifting off-screen. */}
-          <div ref={boxRef} style={{ position: "absolute", inset: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain", background: t.n9 }}>
-            {activeFrame.image ? (
-              <img src={activeFrame.image} alt="captured frame" style={{ display: "block", width: "100%", height: "auto", background: t.n9 }} />
-            ) : activeFrame.snapshot ? (
+          {activeFrame.image ? (
+            // Gym captures are a FIXED-viewport screenshot (1280×800, full_page off).
+            // Fit the WHOLE frame inside the box so the annotator always sees the
+            // entire captured screen at once — no vertical scrolling, and nothing
+            // (like the cart footer) gets cut off at the bottom.
+            <div style={{ position: "absolute", inset: 0, background: t.n9, display: "flex", alignItems: "center", justifyContent: "center", padding: 6, overflow: "hidden" }}>
+              <img src={activeFrame.image} alt="captured frame" style={{ display: "block", maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 2 }} />
+            </div>
+          ) : activeFrame.snapshot ? (
+            // Fixture DOM snapshots can be full-page (tall) — those still fill the
+            // width and scroll vertically inside this box, like a browser tab.
+            <div ref={boxRef} style={{ position: "absolute", inset: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain", background: t.n9 }}>
               <div style={{ width: fit.w * fit.scale, height: fit.h * fit.scale, position: "relative" }}>
                 <iframe
                   ref={iframeRef}
@@ -241,8 +246,8 @@ export function ReplayPane({
                   style={{ position: "absolute", top: 0, left: 0, width: fit.w, height: fit.h, transform: `scale(${fit.scale})`, transformOrigin: "top left", border: "none", background: t.n9, pointerEvents: "none" }}
                 />
               </div>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
         </div>
         {/* Step controls live in their OWN row BELOW the page — never overlapping
             the captured frame, so the annotator sees the full screenshot. */}
