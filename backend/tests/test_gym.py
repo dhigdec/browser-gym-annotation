@@ -79,6 +79,20 @@ def test_resume_502_when_gym_unreachable(client, monkeypatch):
     assert client.post("/api/gym/resume", json={"taskId": "A1/x", "seed": 0}).status_code == 502
 
 
+def test_resume_surfaces_gym_bad_state_as_422_not_502(client, monkeypatch):
+    """A precise gym 4xx (e.g. 422 bad-state overlay) must be surfaced, not
+    collapsed into a misleading 502 'gym unreachable'."""
+    from app import gym_client
+
+    def _raise(*a, **k):
+        raise gym_client.GymBadRequest(422, "could not load state: bad overlay")
+
+    monkeypatch.setattr("app.gym_client.resume_verify", _raise)
+    r = client.post("/api/gym/resume", json={"taskId": "M66/x", "seed": 0, "worldState": {"shop": {}}, "urlTrail": ["/"]})
+    assert r.status_code == 422
+    assert "gym" in r.json()["detail"].lower()
+
+
 def test_breaker_gate_rejects_non_discriminating_policy(monkeypatch):
     """The gate must KEEP a policy whose violating counterfactual is flagged, and
     REJECT one whose counterfactual is not (it doesn't actually discriminate)."""

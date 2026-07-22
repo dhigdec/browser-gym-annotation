@@ -26,6 +26,8 @@ def _gym_job(fn):
             return fn(*args, **kwargs)
         except gym_client.GymTaskNotFound:
             raise jobs.JobFailure("gym task not found") from None
+        except gym_client.GymBadRequest as e:  # surface the gym's precise diagnostic
+            raise jobs.JobFailure(f"gym: {e.detail}") from None
     return inner
 
 

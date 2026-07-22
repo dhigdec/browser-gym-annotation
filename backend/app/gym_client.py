@@ -19,6 +19,16 @@ class GymTaskNotFound(Exception):
     """The gym responded 404 — the task_id is unknown (distinct from unreachable)."""
 
 
+class GymBadRequest(Exception):
+    """The gym responded 4xx (e.g. 422 bad-state overlay) — a precise upstream
+    diagnostic that must be surfaced, NOT collapsed into a generic 502."""
+
+    def __init__(self, status: int, detail: str):
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+
+
 def _req(method: str, path: str, body: dict | None = None, timeout: int = 20) -> dict | None:
     url = settings.gym_url.rstrip("/") + path
     data = json.dumps(body).encode() if body is not None else None
@@ -31,9 +41,15 @@ def _req(method: str, path: str, body: dict | None = None, timeout: int = 20) ->
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
-    except urllib.error.HTTPError as e:  # a real HTTP response — distinguish 404 from a dead gym
+    except urllib.error.HTTPError as e:  # a real HTTP response — distinguish the meaning
         if e.code == 404:
             raise GymTaskNotFound(path) from e
+        if e.code in (400, 422):  # a precise client-side diagnostic (e.g. bad state overlay)
+            try:
+                detail = json.loads(e.read()).get("detail", "bad request")
+            except Exception:  # noqa: BLE001
+                detail = "bad request"
+            raise GymBadRequest(e.code, str(detail)) from e
         return None
     except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
         return None

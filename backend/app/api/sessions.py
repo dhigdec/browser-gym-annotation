@@ -11,7 +11,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -44,19 +44,42 @@ _STATUSES = _OPEN | {"submitted"}
 # ---- request bodies --------------------------------------------------------
 
 
-class OpenSessionBody(BaseModel):
+def _has_nul(v: object) -> bool:
+    if isinstance(v, str):
+        return "\x00" in v
+    if isinstance(v, dict):
+        return any(_has_nul(x) for x in v.values())
+    if isinstance(v, (list, tuple)):
+        return any(_has_nul(x) for x in v)
+    return False
+
+
+class _NulSafe(BaseModel):
+    """Reject NUL bytes anywhere in the request. Postgres text/json columns cannot
+    store \\x00, so an unhandled NUL becomes a 500 at write time — fail closed as a
+    clean 422 at the edge instead."""
+
+    @model_validator(mode="after")
+    def _reject_nul(self):
+        for name, val in self.__dict__.items():
+            if _has_nul(val):
+                raise ValueError(f"{name} must not contain NUL bytes")
+        return self
+
+
+class OpenSessionBody(_NulSafe):
     # Bounded to the annotator.email column width — an over-length value must be a
     # 422, not an unhandled DB truncation 500.
     annotatorEmail: str | None = Field(default=None, max_length=255)
     fresh: bool = False  # start a NEW session instead of resuming the latest (e.g. after submit)
 
 
-class PatchSessionBody(BaseModel):
+class PatchSessionBody(_NulSafe):
     status: str | None = None
     rerunFrom: int | None = None
 
 
-class VerifierIn(BaseModel):
+class VerifierIn(_NulSafe):
     id: str = Field(max_length=64)  # bounded to verifier.ext_id column width (422, not a 500)
     level: str
     assertion: str
@@ -67,11 +90,11 @@ class VerifierIn(BaseModel):
     addedByHuman: bool = False
 
 
-class SaveSuiteBody(BaseModel):
+class SaveSuiteBody(_NulSafe):
     verifiers: list[VerifierIn]
 
 
-class BenchmarkBody(BaseModel):
+class BenchmarkBody(_NulSafe):
     # `reward` is accepted for back-compat but IGNORED — the server recomputes it
     # from the persisted suite so the stored reward can never be client-asserted.
     corrected: bool = False
@@ -80,7 +103,7 @@ class BenchmarkBody(BaseModel):
     results: dict = {}
 
 
-class RunBody(BaseModel):
+class RunBody(_NulSafe):
     # `verifiers` is accepted for back-compat but IGNORED for scoring — the server
     # evaluates the PERSISTED suite, so a client cannot inject a passing check.
     corrected: bool = False
@@ -88,13 +111,13 @@ class RunBody(BaseModel):
     overrides: list[str] = []
 
 
-class RerunBody(BaseModel):
+class RerunBody(_NulSafe):
     fromStep: int
     correction: str = ""
     mode: str = "deterministic"  # deterministic (oracle/gold path) | agent (live, M6b)
 
 
-class SubmitBody(BaseModel):
+class SubmitBody(_NulSafe):
     reward: int
     override: bool = False
     overrideReason: str | None = None
@@ -105,36 +128,46 @@ class SubmitBody(BaseModel):
 
 
 def _seed_task(db: Session, external_id: str) -> Task:
-    """Ensure the given task exists as a real row (idempotent)."""
+    """Ensure the given task exists as a real row (idempotent + race-safe)."""
     fx = task_fixture(external_id) or _FIXTURE
     ext = fx["task"]["id"]
     task = db.scalar(select(Task).where(Task.external_id == ext))
     if task is None:
         t = fx["task"]
-        task = Task(
-            external_id=ext,
-            title=t["title"],
-            prompt=t["prompt"],
-            category=t.get("meta", ""),
-            priority=t.get("priority", "Medium"),
-            meta={
-                "startState": t.get("startState", {}),
-                "constraints": t.get("constraints", []),
-                "allowedSites": t.get("allowedSites", []),
-            },
-        )
-        db.add(task)
-        db.flush()
+        try:
+            with db.begin_nested():  # SAVEPOINT — a concurrent insert won't kill the txn
+                task = Task(
+                    external_id=ext,
+                    title=t["title"],
+                    prompt=t["prompt"],
+                    category=t.get("meta", ""),
+                    priority=t.get("priority", "Medium"),
+                    meta={
+                        "startState": t.get("startState", {}),
+                        "constraints": t.get("constraints", []),
+                        "allowedSites": t.get("allowedSites", []),
+                    },
+                )
+                db.add(task)
+                db.flush()
+        except IntegrityError:  # a concurrent request won the unique(external_id) — re-select it
+            task = db.scalar(select(Task).where(Task.external_id == ext))
     return task
 
 
 def _default_annotator(db: Session, email: str | None) -> Annotator:
+    """Get-or-create the annotator, race-safe: two concurrent first-time opens for
+    a brand-new email must not 500 on the unique(email) constraint."""
     email = email or _DEFAULT_ANNOTATOR
     ann = db.scalar(select(Annotator).where(Annotator.email == email))
     if ann is None:
-        ann = Annotator(email=email)
-        db.add(ann)
-        db.flush()
+        try:
+            with db.begin_nested():  # SAVEPOINT — roll back only the failed insert, keep the txn
+                ann = Annotator(email=email)
+                db.add(ann)
+                db.flush()
+        except IntegrityError:  # a concurrent request created it first — re-select the winner
+            ann = db.scalar(select(Annotator).where(Annotator.email == email))
     return ann
 
 
@@ -266,8 +299,15 @@ def _snapshot(db: Session, s: ReviewSession) -> dict:
     }
 
 
-def _get_session(db: Session, session_id: UUID) -> ReviewSession:
-    s = db.get(ReviewSession, session_id)
+def _get_session(db: Session, session_id: UUID, *, lock: bool = False) -> ReviewSession:
+    # lock=True takes a row lock (SELECT ... FOR UPDATE) so the mutating endpoints
+    # serialize on the session row — this closes the run-vs-submit TOCTOU where a
+    # /run reads a not-yet-submitted status and appends a benchmark to a session
+    # /submit locks a moment later. No-op on SQLite; enforced on Postgres.
+    if lock:
+        s = db.scalar(select(ReviewSession).where(ReviewSession.id == session_id).with_for_update())
+    else:
+        s = db.get(ReviewSession, session_id)
     if s is None:
         raise HTTPException(status_code=404, detail="session not found")
     return s
@@ -351,7 +391,7 @@ def get_session(session_id: UUID, db: Session = Depends(get_db)) -> dict:
 
 @router.patch("/sessions/{session_id}")
 def patch_session(session_id: UUID, body: PatchSessionBody, db: Session = Depends(get_db)) -> dict:
-    s = _get_session(db, session_id)
+    s = _get_session(db, session_id, lock=True)
     # A submitted session is immutable — no status/correction changes via PATCH.
     if s.status == "submitted":
         raise HTTPException(status_code=409, detail="session is submitted (immutable) — start a new session to re-annotate")
@@ -378,7 +418,7 @@ def rerun(session_id: UUID, body: RerunBody, db: Session = Depends(get_db)) -> d
     """Re-run the agent from a corrected step. Persists an IMMUTABLE branch —
     versioned via parent_id, never overwritten — capturing the human correction.
     The continuation is deterministic today; a live agent plugs in at mode='agent'."""
-    s = _get_session(db, session_id)
+    s = _get_session(db, session_id, lock=True)
     if s.status == "submitted":
         raise HTTPException(status_code=409, detail="session is submitted (immutable) — start a new session to re-annotate")
     fixture = _session_fixture(db, s)
@@ -411,7 +451,7 @@ def rerun(session_id: UUID, body: RerunBody, db: Session = Depends(get_db)) -> d
 @router.put("/sessions/{session_id}/suite")
 def save_suite(session_id: UUID, body: SaveSuiteBody, db: Session = Depends(get_db)) -> dict:
     """Persist the current verifier suite as a new immutable version."""
-    s = _get_session(db, session_id)
+    s = _get_session(db, session_id, lock=True)
     _assert_not_submitted(s)
     # Reward results are keyed by the authoring id — a duplicate id would let one
     # verifier's verdict overwrite another's, masking a failing/placeholder check.
@@ -460,7 +500,7 @@ def run_verifiers(session_id: UUID, body: RunBody, db: Session = Depends(get_db)
     results. The reward is computed server-side from the stored suite — the
     client's `verifiers` are ignored for scoring, so a fabricated passing check
     cannot inflate the reward."""
-    s = _get_session(db, session_id)
+    s = _get_session(db, session_id, lock=True)
     _assert_not_submitted(s)
     out = _run_benchmark(db, s, body.corrected, set(body.overrides))
     db.commit()
@@ -471,7 +511,7 @@ def run_verifiers(session_id: UUID, body: RunBody, db: Session = Depends(get_db)
 def record_benchmark(session_id: UUID, body: BenchmarkBody, db: Session = Depends(get_db)) -> dict:
     """Deprecated alias for /run — kept for back-compat. Recomputes the reward
     from the persisted suite; the client-supplied `reward` is ignored."""
-    s = _get_session(db, session_id)
+    s = _get_session(db, session_id, lock=True)
     _assert_not_submitted(s)
     _run_benchmark(db, s, body.corrected, set(body.overrides))
     db.commit()
@@ -483,7 +523,7 @@ def submit(session_id: UUID, body: SubmitBody, db: Session = Depends(get_db)) ->
     """Write the dataset row. The reward stored is the AUTHORITATIVE server-computed
     reward from the latest benchmark run of the persisted suite — never the
     client-asserted `body.reward`. A benchmark must have been run first."""
-    s = _get_session(db, session_id)
+    s = _get_session(db, session_id, lock=True)
     if s.status == "submitted":
         # Immutable once submitted — start a fresh session to re-annotate
         # (POST /tasks/{id}/sessions with fresh=true) rather than superseding.

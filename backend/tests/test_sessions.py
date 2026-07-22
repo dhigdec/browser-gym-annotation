@@ -247,3 +247,27 @@ def test_only_one_submission_per_session(client, monkeypatch, db_session):
     assert client.post(f"/api/sessions/{sid}/submit", json={"reward": 0, "override": True, "overrideReason": "x"}).status_code == 409
     n = db_session.query(Submission).filter(Submission.session_id == UUID(sid)).count()
     assert n == 1
+
+
+# ---- audit fixes: NUL bytes 422 (not 500) + race-safe get-or-create ----
+
+
+def test_nul_byte_in_text_fields_is_422_not_500(client):
+    assert client.post("/api/tasks/GYM-2041/sessions", json={"annotatorEmail": "a\x00b@x.io"}).status_code == 422
+    sid = _open(client)
+    assert client.post(f"/api/sessions/{sid}/rerun", json={"fromStep": 2, "correction": "bad\x00fix"}).status_code == 422
+    bad = [{"id": "x", "level": "ui", "assertion": "n\x00ul", "code": "c", "check": {"kind": "state_true", "path": "a"}}]
+    assert client.put(f"/api/sessions/{sid}/suite", json={"verifiers": bad}).status_code == 422
+    # a NUL nested inside the check IR is also rejected
+    bad2 = [{"id": "y", "level": "ui", "assertion": "a", "code": "c", "check": {"kind": "dom_contains", "needle": "x\x00y"}}]
+    assert client.put(f"/api/sessions/{sid}/suite", json={"verifiers": bad2}).status_code == 422
+
+
+def test_get_or_create_annotator_is_idempotent(client, db_session):
+    from app.models import Annotator
+
+    email = "brand-new-annotator@test.io"
+    s1 = client.post("/api/tasks/GYM-2041/sessions", json={"annotatorEmail": email, "fresh": True}).json()["sessionId"]
+    s2 = client.post("/api/tasks/GYM-2041/sessions", json={"annotatorEmail": email, "fresh": True}).json()["sessionId"]
+    assert s1 != s2  # fresh=true mints two sessions
+    assert db_session.query(Annotator).filter(Annotator.email == email).count() == 1  # but exactly ONE annotator

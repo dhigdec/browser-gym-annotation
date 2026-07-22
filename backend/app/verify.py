@@ -115,7 +115,11 @@ def _eval_check(check: dict, ctx: dict) -> bool:
             return needle in v
         return False
     if kind == "judge_state":
-        return _get(state, check["path"]) == _get(state, check["equalsPath"])
+        # Both paths must actually EXIST — comparing two absent paths yields
+        # None == None → True, which would pass an unproven check (fail-closed
+        # violation). An absent/typo'd path is unproven → fail.
+        p, ep = check.get("path"), check.get("equalsPath")
+        return bool(p) and bool(ep) and _has(state, p) and _has(state, ep) and _get(state, p) == _get(state, ep)
     if kind == "trace_max_steps":
         return len(ctx["trace"]) <= int(check["n"])
     if kind == "trace_hosts_subset":

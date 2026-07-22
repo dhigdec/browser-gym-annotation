@@ -28,6 +28,11 @@ def test_state_empty_and_eq_fail_closed_on_absent_path():
     assert _eval_check({"kind": "state_empty", "path": "a.zzz"}, ctx) is False   # absent → fail closed
     assert _eval_check({"kind": "state_eq", "path": "a.zzz", "value": None}, ctx) is False  # absent → fail closed
     assert _eval_check({"kind": "state_eq", "path": "a.b"}, ctx) is False        # no 'value' key → fail closed
+    # judge_state must fail closed when a path is absent — two absent paths used to
+    # yield None == None -> True (a false-positive pass).
+    assert _eval_check({"kind": "judge_state", "path": "a.b", "equalsPath": "a.b"}, ctx) is True   # both present + equal
+    assert _eval_check({"kind": "judge_state", "path": "a.x", "equalsPath": "a.y"}, ctx) is False  # both absent -> fail closed
+    assert _eval_check({"kind": "judge_state", "path": "a.b", "equalsPath": "a.x"}, ctx) is False  # one absent -> fail closed
 
 
 def test_oracle_gate_fails_a_suite_that_already_holds_on_initial():

@@ -14,7 +14,7 @@ from app.api.sessions import router as sessions_router
 from app.api.tasks import router as tasks_router
 from app.config import settings
 from app.db import Base, engine
-from app.gym_client import GymTaskNotFound
+from app.gym_client import GymBadRequest, GymTaskNotFound
 
 log = logging.getLogger("annotator")
 
@@ -61,6 +61,13 @@ app.add_middleware(
 async def _gym_task_not_found(_: Request, exc: GymTaskNotFound) -> JSONResponse:
     # Distinguish "unknown gym task" (404) from an unreachable gym (502).
     return JSONResponse(status_code=404, content={"detail": "gym task not found"})
+
+
+@app.exception_handler(GymBadRequest)
+async def _gym_bad_request(_: Request, exc: GymBadRequest) -> JSONResponse:
+    # Surface the gym's precise 4xx (e.g. 422 bad-state overlay) instead of a
+    # misleading 502 "gym unreachable".
+    return JSONResponse(status_code=exc.status, content={"detail": f"gym: {exc.detail}"})
 
 
 @app.get("/health")
