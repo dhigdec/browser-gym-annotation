@@ -61,6 +61,7 @@ export interface VerifierPayload {
   failsUntilCorrected: boolean;
   placeholder: boolean;
   addedByHuman: boolean;
+  gymResult?: string; // real gym milestone verdict (pass|fail) — carried onto the exported sample
 }
 
 /** Resolve app keys → colors so the render layer stays token-driven. */
@@ -362,6 +363,21 @@ export async function resumeGymReview(body: {
   edits?: Record<string, unknown>;
 }): Promise<ResumeResult | null> {
   return post<ResumeResult>("/api/gym/resume", body);
+}
+
+/** Replay the LATEST persisted gym run for a task from the DB — no live agent, so
+ *  reopening a task is instant AND shows the SAME run the annotator was reviewing
+ *  (a saved correction fork restores onto the identical trajectory). Returns null
+ *  when the task was never reviewed (→ caller runs a fresh agent), which persists
+ *  one for next time. */
+export async function getPersistedGymReview(taskId: string): Promise<ReviewData | null> {
+  try {
+    const res = await fetch(`/api/gym/tasks/${encodeURIComponent(taskId)}/persisted-review`);
+    if (!res.ok) return null; // 404 = never reviewed → run fresh
+    return mapPayload((await res.json()) as ReviewPayload);
+  } catch {
+    return null;
+  }
 }
 
 /** Enqueue a real gym run; returns the jobId to poll, or null if unreachable.

@@ -104,6 +104,12 @@ class Trajectory(Base):
     score: Mapped[float] = mapped_column(Float, default=0.0)
     success: Mapped[bool] = mapped_column(Boolean, default=False)
     source: Mapped[str] = mapped_column(String(16), default="fixture")  # fixture | gym
+    # The exact review payload this run produced (task + steps + verifiers + tabs +
+    # backendState + gymResume world). Persisted for gym runs so REOPENING a gym
+    # task replays the SAME run — instead of re-driving a fresh, stochastic agent
+    # each time (which would leave a saved correction fork restoring onto a
+    # different trajectory). Null for fixture trajectories.
+    raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=func.now())
 
     session: Mapped[ReviewSession] = relationship(back_populates="trajectories")

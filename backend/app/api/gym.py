@@ -84,7 +84,12 @@ def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review
     db.add(s)
     db.flush()
 
-    traj = models.Trajectory(session_id=s.id, agent=agent, seed=seed, score=float(vr.get("score", 0.0) or 0.0), success=bool(vr.get("success")), source="gym")
+    # Persist the EXACT review payload (steps + screenshots + verifiers + tabs +
+    # backendState + gymResume world) so reopening this task replays THIS run
+    # verbatim instead of re-driving a fresh, stochastic agent. `review` already
+    # carries backendState + gymResume (set by the caller) but NOT yet sessionId
+    # (added after this returns) — a shallow copy keeps that out of the snapshot.
+    traj = models.Trajectory(session_id=s.id, agent=agent, seed=seed, score=float(vr.get("score", 0.0) or 0.0), success=bool(vr.get("success")), source="gym", raw=dict(review))
     db.add(traj)
     db.flush()
     raw_steps = t.get("steps") or []  # 1:1 with review["steps"] (to_review enumerates them)
@@ -212,6 +217,30 @@ def gym_run_review(task_id: str, body: RunReviewBody) -> dict:
     the request path so a proxy/read timeout can't drop a finished review."""
     job = jobs.store.submit("run-review", _run_review_job, task_id, body.agent, body.seed, body.brief)
     return {"jobId": job.id, "status": job.status}
+
+
+@router.get("/tasks/{task_id:path}/persisted-review")
+def gym_persisted_review(task_id: str, db: Session = Depends(get_db)) -> dict:
+    """Replay the LATEST persisted gym run for a task from the DB — no live agent.
+    Reopening a gym task uses this so the annotator sees the SAME run (steps,
+    screenshots, verdict) they were reviewing, and a saved correction fork
+    restores onto the identical trajectory. 404 (→ the client runs fresh) when the
+    task was never reviewed, or its only runs predate raw-payload persistence."""
+    task = db.scalar(select(models.Task).where(models.Task.external_id == task_id))
+    if task is None:
+        raise HTTPException(status_code=404, detail="no persisted gym review for this task")
+    traj = db.scalar(
+        select(models.Trajectory)
+        .join(models.ReviewSession, models.Trajectory.session_id == models.ReviewSession.id)
+        .where(models.ReviewSession.task_id == task.id, models.Trajectory.source == "gym", models.Trajectory.raw.isnot(None))
+        .order_by(models.Trajectory.created_at.desc())
+    )
+    if traj is None or not traj.raw:
+        raise HTTPException(status_code=404, detail="no persisted gym review for this task")
+    review = dict(traj.raw)
+    review["persisted"] = True
+    review["replayed"] = True  # this payload came from the DB, not a fresh run
+    return review
 
 
 @router.get("/jobs/{job_id}")

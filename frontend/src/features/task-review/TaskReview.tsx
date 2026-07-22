@@ -11,6 +11,7 @@ import {
   fetchGymTasks,
   fetchReview,
   fetchTasks,
+  getPersistedGymReview,
   openSession,
   patchSession,
   rerunGymBranch,
@@ -200,10 +201,20 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
   // Run the verifier suite through the backend execution engine (M5). Falls
   // back to a flag-derived result only when the backend is unreachable.
   const runBenchmark = async () => {
-    // Gym tasks carry the real milestone verdict already (verifierState/reward
-    // read v.gymResult / data.gymReward) — just reveal it.
+    // Gym tasks carry the real milestone verdict already (verifierState/reward read
+    // v.gymResult / data.gymReward). Still persist a benchmark run server-side —
+    // scored from the authoritative gym-engine verdict — so the session reaches
+    // benchmark_run and the sample becomes SUBMITTABLE (submit requires a run).
     if (data.source === "gym") {
-      dispatch({ t: "benchmarkComplete", results: {} });
+      const overrides = Object.keys(state.overrides);
+      const corrected = state.rerunFrom != null;
+      if (sessionId) {
+        await saveSuite(sessionId, verifierPayloads(state)); // persist the milestones as the human suite
+        const out = await runVerifiers(sessionId, { corrected, verifiers: verifierPayloads(state), overrides });
+        dispatch({ t: "benchmarkComplete", results: out?.results ?? {} });
+        return;
+      }
+      dispatch({ t: "benchmarkComplete", results: {} }); // offline — reveal only
       return;
     }
     const verifiers = verifierPayloads(state);
@@ -783,11 +794,20 @@ export function TaskReview() {
     setPickerOpen(false);
     setGymError(null);
     setGymAdhoc(adhoc);
-    setGymPhase("queued");
     setGymLoading(id);
-    // Open every task with a LIVE MODEL run (gpt-5.5) — the annotator reviews the
-    // model's actual (often breaking) attempt, finds the bad step, corrects it,
-    // and the model re-drives from there. (Was the oracle gold path.)
+    // Reopen the SAME persisted run if this task was already reviewed — so the
+    // trajectory (and any saved correction fork) is stable across opens instead of
+    // re-driving a fresh, stochastic agent every time.
+    const cached = await getPersistedGymReview(id);
+    if (cached) {
+      setGymLoading(null); // dismiss the loader — replaying from the DB is instant
+      setGymData(cached);
+      return;
+    }
+    // First time: run the model LIVE (gpt-5.5) — the annotator reviews the model's
+    // actual (often breaking) attempt, finds the bad step, corrects it, and the
+    // model re-drives from there. The run is persisted, so the next open replays it.
+    setGymPhase("queued");
     const rv = await runGymReview(id, "openai", 0, { onStatus: setGymPhase });
     setGymLoading(null);
     if (rv) setGymData(rv);

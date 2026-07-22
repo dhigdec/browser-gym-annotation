@@ -319,6 +319,7 @@ export function verifierPayloads(s: ReviewState) {
     failsUntilCorrected: !!v.failsUntilCorrected,
     placeholder: !!v.placeholder,
     addedByHuman: v.id.startsWith("add-"),
+    gymResult: v.gymResult, // real milestone verdict → persisted onto the exported sample
   }));
 }
 

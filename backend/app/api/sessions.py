@@ -89,6 +89,7 @@ class VerifierIn(_NulSafe):
     failsUntilCorrected: bool = False
     placeholder: bool = False
     addedByHuman: bool = False
+    gymResult: str | None = Field(default=None, max_length=8)  # real gym milestone verdict (pass|fail), for the exported snapshot
 
 
 class SaveSuiteBody(_NulSafe):
@@ -208,12 +209,61 @@ def _persisted_verifiers(db: Session, suite: VerifierSuite) -> list[dict]:
     ]
 
 
+def _latest_gym_verdict(db: Session, task_id: UUID) -> BenchmarkRun | None:
+    """The authoritative gym-engine verdict for a task: the newest SYSTEM gym
+    review's benchmark run (reward + per-milestone results). System gym sessions
+    carry an `agent`; a human review session does not — so this never picks up the
+    human's own session. After a drive-forward correction a fresh system review is
+    persisted, so 'latest' is the CORRECTED verdict, and re-benchmarking reflects
+    the fix."""
+    sys_sessions = db.scalars(
+        select(ReviewSession)
+        .where(ReviewSession.task_id == task_id, ReviewSession.source == "gym", ReviewSession.agent != "")
+        .order_by(ReviewSession.created_at.desc())
+    ).all()
+    for ss in sys_sessions:
+        suite = _latest_suite(db, ss.id)
+        if suite is None:
+            continue
+        br = db.scalar(
+            select(BenchmarkRun).where(BenchmarkRun.suite_id == suite.id).order_by(BenchmarkRun.created_at.desc())
+        )
+        if br is not None:
+            return br
+    return None
+
+
 def _run_benchmark(db: Session, s: ReviewSession, corrected: bool, overrides: set[str]) -> dict:
     """Evaluate the PERSISTED suite for real and record the run. Single source of
     truth for both /run and /benchmark — neither trusts a client reward."""
     suite = _latest_suite(db, s.id)
     if suite is None:
         raise HTTPException(status_code=409, detail="save the verifier suite before running the benchmark")
+    if s.source == "gym":
+        # A gym session has no hand-authored fixture, so evaluate() would fail every
+        # backend-state check. Score from the authoritative gym-ENGINE verdict (the
+        # persisted system run) instead — the client can't reach it, so the stored
+        # reward stays server-authoritative — and record it against the human's
+        # suite so the session reaches benchmark_run and becomes submittable.
+        gym_br = _latest_gym_verdict(db, s.task_id)
+        if gym_br is None:
+            raise HTTPException(status_code=409, detail="no gym run recorded for this task — open it to run the agent first")
+        results = dict(gym_br.results or {})
+        reward = int(gym_br.reward)
+        applied_overrides = sorted(overrides & set(results.keys()))  # human attestations on real milestones
+        for oid in applied_overrides:
+            results[oid] = "pass"
+        if applied_overrides:  # an override can only lift a fail → recompute the gate
+            reward = 1 if all(r == "pass" for r in results.values()) else reward
+        db.add(BenchmarkRun(suite_id=suite.id, reward=reward, results=results, overridden=applied_overrides))
+        if s.status in _OPEN:
+            s.status = "benchmark_run"
+        _audit(
+            db, "", "benchmark.execute", str(s.id),
+            {"reward": reward, "executed": len(results), "overridden": applied_overrides, "corrected": corrected, "gym": True},
+            session_id=s.id,
+        )
+        return {"reward": reward, "results": results, "executed": len(results), "overridden": len(applied_overrides)}
     persisted = _persisted_verifiers(db, suite)
     out = evaluate(persisted, _session_fixture(db, s), corrected, overrides)
     applied_overrides = sorted(overrides & {v["id"] for v in persisted})  # the ones that actually applied
@@ -559,6 +609,7 @@ def save_suite(session_id: UUID, body: SaveSuiteBody, db: Session = Depends(get_
                         fails_until_corrected=v.failsUntilCorrected,
                         placeholder=v.placeholder,
                         added_by_human=v.addedByHuman,
+                        gym_result=v.gymResult or "",  # carry the real milestone verdict onto the exported sample
                     )
                 )
             _audit(db, "", "suite.save", str(suite.id), {"version": version, "count": len(body.verifiers)}, session_id=s.id)

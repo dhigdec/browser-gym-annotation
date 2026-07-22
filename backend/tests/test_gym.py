@@ -188,3 +188,108 @@ def test_job_store_runs_and_captures_outcomes():
             break
         time.sleep(0.02)
     assert st.get(bad.id).status == "error" and st.get(bad.id).error == "boom"
+
+
+# ---- gym-persistence cluster (#1 gym-aware benchmark, #3 stable replay, #4
+# submittable) — these read only the DB, so no live gym is needed. -------------
+
+
+def _synthetic_gym_review(task_id: str, *, success: bool):
+    """A minimal (run, review) pair shaped like _run_review_job produces, so
+    _persist_gym_review writes a full record (incl. trajectory.raw)."""
+    reward = 1 if success else 0
+    steps = [
+        {"idx": i, "type": "click", "description": f"step {i}", "tabId": "shop",
+         "image": f"/api/gym/screenshot?path=s{i}.png", "url": "/shop"}
+        for i in range(3)
+    ]
+    verifiers = [
+        {"id": "m0", "level": "ui", "assertion": "a0", "code": "c0", "gymResult": "pass"},
+        {"id": "m1", "level": "backend", "assertion": "a1", "code": "c1",
+         "gymResult": "pass" if success else "fail"},
+    ]
+    run = {"seed": 0, "trajectory": {
+        "verifier_result": {"score": float(reward), "success": success},
+        "steps": [{"reasoning": f"r{i}"} for i in range(3)],
+        "task_category": "M", "task_difficulty": "medium", "initial_url": "/shop"}}
+    review = {
+        "task": {"title": "T", "prompt": "do it", "priority": "High",
+                 "constraints": [], "allowedSites": [], "runSummary": []},
+        "steps": steps, "verifiers": verifiers, "gymReward": reward,
+        "backendState": {"orders": [], "cart": {"items": []}},
+        "gymResume": {"worldState": {"shop": {}}}, "source": "gym", "tabs": [],
+    }
+    return run, review
+
+
+def test_persisted_review_404_then_replays_same_run(client, db_session):
+    """#3 — before any run the endpoint 404s; after a run it REPLAYS the exact
+    persisted payload (steps + screenshots + verdict), so reopening is stable."""
+    from app.api.gym import _persist_gym_review
+
+    task_id = "M99/stable_replay"
+    assert client.get(f"/api/gym/tasks/{task_id}/persisted-review").status_code == 404
+
+    run, review = _synthetic_gym_review(task_id, success=True)
+    _persist_gym_review(db_session, task_id, "oracle", run, review)
+
+    r = client.get(f"/api/gym/tasks/{task_id}/persisted-review")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["replayed"] is True
+    assert len(body["steps"]) == 3
+    assert all(s["image"] for s in body["steps"])  # screenshots survive
+    assert body["gymReward"] == 1
+    # a second read is identical (no re-run, no drift)
+    assert client.get(f"/api/gym/tasks/{task_id}/persisted-review").json()["steps"] == body["steps"]
+
+
+def test_gym_benchmark_scores_from_verdict_and_is_submittable(client, db_session):
+    """#1/#4 — a human gym session (no fixture) is scored from the authoritative
+    gym verdict (not the empty fixture → not 0), reaches benchmark_run, and
+    becomes submittable."""
+    from app.api.gym import _persist_gym_review
+
+    task_id = "M98/submit_gym"
+    run, review = _synthetic_gym_review(task_id, success=True)
+    _persist_gym_review(db_session, task_id, "oracle", run, review)
+
+    snap = client.post(f"/api/tasks/{task_id}/sessions", json={"fresh": True}).json()
+    sid = snap["sessionId"]
+    verifiers = [{"id": v["id"], "level": v["level"], "assertion": v["assertion"],
+                  "code": v["code"], "check": None, "failsUntilCorrected": False,
+                  "placeholder": False, "addedByHuman": False, "gymResult": v["gymResult"]}
+                 for v in review["verifiers"]]
+    assert client.put(f"/api/sessions/{sid}/suite", json={"verifiers": verifiers}).status_code == 200
+
+    bench = client.post(f"/api/sessions/{sid}/run", json={"corrected": False, "verifiers": [], "overrides": []})
+    assert bench.status_code == 200
+    out = bench.json()
+    assert out["reward"] == 1  # #1: from the gym verdict, NOT 0 from the empty fixture
+    assert out["results"] == {"m0": "pass", "m1": "pass"}
+    assert client.get(f"/api/sessions/{sid}").json()["status"] == "benchmark_run"  # #4
+
+    sub = client.post(f"/api/sessions/{sid}/submit", json={"reward": 1, "override": False, "kind": "golden"})
+    assert sub.status_code == 200  # #4: gym samples submit
+    assert sub.json()["submission"]["kind"] == "golden"
+
+
+def test_gym_breaker_benchmark_scores_zero_not_from_empty_fixture(client, db_session):
+    """A failed gym run scores 0 from the verdict — and 0 is a real breaker
+    (needs an override to submit), not an artifact of the empty fixture."""
+    from app.api.gym import _persist_gym_review
+
+    task_id = "M97/breaker_gym"
+    run, review = _synthetic_gym_review(task_id, success=False)
+    _persist_gym_review(db_session, task_id, "oracle", run, review)
+
+    sid = client.post(f"/api/tasks/{task_id}/sessions", json={"fresh": True}).json()["sessionId"]
+    verifiers = [{"id": v["id"], "level": v["level"], "assertion": v["assertion"],
+                  "code": v["code"], "check": None, "failsUntilCorrected": False,
+                  "placeholder": False, "addedByHuman": False, "gymResult": v["gymResult"]}
+                 for v in review["verifiers"]]
+    client.put(f"/api/sessions/{sid}/suite", json={"verifiers": verifiers})
+    out = client.post(f"/api/sessions/{sid}/run", json={"corrected": False, "verifiers": [], "overrides": []}).json()
+    assert out["reward"] == 0 and out["results"] == {"m0": "pass", "m1": "fail"}
+    # reward 0 without an override is rejected at submit
+    assert client.post(f"/api/sessions/{sid}/submit", json={"reward": 0, "override": False}).status_code == 409
