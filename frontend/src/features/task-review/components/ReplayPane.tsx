@@ -56,7 +56,7 @@ function CorrectionEditor({ stepNumber, seed, onCancel, onSave }: { stepNumber: 
   const [text, setText] = useState(seed);
   useEffect(() => setText(seed), [seed]);
   return (
-    <div style={{ position: "absolute", left: 16, right: 16, bottom: 14, padding: 14, background: t.n9, border: `1px solid ${t.primary6}`, borderRadius: 10, boxShadow: t.shadowXl }}>
+    <div style={{ padding: 14, background: t.n9, border: `1px solid ${t.primary6}`, borderRadius: 10, boxShadow: t.shadowSm }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
         <Icon name="pencil" size={16} color={t.primary6} />
         <span style={{ fontSize: "0.84rem", fontWeight: weight.bold, color: t.n0 }}>Correct step {stepNumber}</span>
@@ -89,7 +89,7 @@ function StepCard({ step, stepNumber, resolved, verified, onVerify, onCorrect }:
   const color = ACTION_COLOR[step.type];
   const pink = ACTION_COLOR.tab;
   return (
-    <div style={{ position: "absolute", left: 16, right: 16, bottom: 14, display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", background: t.n9, border: `1px solid ${t.n7}`, borderLeft: `3px solid ${isError ? t.red : color}`, borderRadius: 10, boxShadow: t.shadowLg }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", background: t.n9, border: `1px solid ${t.n7}`, borderLeft: `3px solid ${isError ? t.red : color}`, borderRadius: 10, boxShadow: t.shadowSm }}>
       <span style={{ width: 9, height: 9, borderRadius: t.radiusFull, background: isError ? t.red : color, flexShrink: 0 }} />
       <span style={{ fontFamily: t.fontMono, fontSize: "0.6875rem", fontWeight: weight.bold, letterSpacing: "0.05em", color: t.n3, textTransform: "uppercase", whiteSpace: "nowrap" }}>
         Step {stepNumber} · {step.type}
@@ -243,19 +243,24 @@ export function ReplayPane({
               </div>
             ) : null}
           </div>
-          {showOverlay && step.type === "error" && step.errorMsg && !correcting && (
-            <div style={{ position: "absolute", left: 16, right: 16, top: 12, zIndex: 2, display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", background: t.redLite, border: `1px solid color-mix(in srgb, ${t.red} 42%, ${t.n9})`, borderRadius: 8, color: t.redDark, boxShadow: t.shadowSm }}>
-              <Icon name="alert" size={17} stroke={1.7} color={t.redDark} />
-              <span style={{ fontSize: "0.8125rem", fontWeight: weight.semibold }}>{step.errorMsg}</span>
-            </div>
-          )}
-          {showOverlay &&
-            (correcting ? (
+        </div>
+        {/* Step controls live in their OWN row BELOW the page — never overlapping
+            the captured frame, so the annotator sees the full screenshot. */}
+        {showOverlay && (
+          <div style={{ flexShrink: 0, padding: "8px 14px 12px", display: "flex", flexDirection: "column", gap: 8, background: t.n85, borderTop: `1px solid ${t.n7}` }}>
+            {step.type === "error" && step.errorMsg && !correcting && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: t.redLite, border: `1px solid color-mix(in srgb, ${t.red} 42%, ${t.n9})`, borderRadius: 8, color: t.redDark }}>
+                <Icon name="alert" size={17} stroke={1.7} color={t.redDark} />
+                <span style={{ fontSize: "0.8125rem", fontWeight: weight.semibold }}>{step.errorMsg}</span>
+              </div>
+            )}
+            {correcting ? (
               <CorrectionEditor stepNumber={stepNumber} seed={correctionSeed} onCancel={onCancelCorrect} onSave={onSaveCorrect} />
             ) : (
               <StepCard step={step} stepNumber={stepNumber} resolved={resolved} verified={verified} onVerify={onVerify} onCorrect={onStartCorrect} />
-            ))}
-        </div>
+            )}
+          </div>
+        )}
       </div>
       <TransportBar steps={steps} stepIndex={stepIndex} playing={playing} onPlayToggle={onPlayToggle} onStepTo={onStepTo} />
     </div>
