@@ -293,3 +293,64 @@ def test_gym_breaker_benchmark_scores_zero_not_from_empty_fixture(client, db_ses
     assert out["reward"] == 0 and out["results"] == {"m0": "pass", "m1": "fail"}
     # reward 0 without an override is rejected at submit
     assert client.post(f"/api/sessions/{sid}/submit", json={"reward": 0, "override": False}).status_code == 409
+
+
+def test_drive_forward_does_not_lose_or_shadow_the_original_breaker(client, db_session):
+    """The annotator's KEY guarantee: correcting a step + driving forward persists
+    the corrected run as a real, scorable record — but the ORIGINAL full breaking
+    run is never overwritten and is still what persisted-review reopens. Nothing
+    is lost; the correction is additive."""
+    from app.api.gym import _persist_gym_review
+    from app import models
+    from sqlalchemy import select
+
+    task_id = "M95/preserve_original"
+    orig_run, orig_review = _synthetic_gym_review(task_id, success=False)  # the breaking run
+    orig_review["steps"] = orig_review["steps"]  # 3 steps
+    sid_orig = _persist_gym_review(db_session, task_id, "openai", orig_run, orig_review)
+
+    # persisted-review returns the ORIGINAL breaking run
+    before = client.get(f"/api/gym/tasks/{task_id}/persisted-review").json()
+    assert len(before["steps"]) == 3 and before["gymReward"] == 0
+
+    # annotator drives forward from a corrected step → a CONTINUATION run persisted
+    # WITHOUT a replay payload (persist_raw=False), like _resume_run_job does.
+    cont_run, cont_review = _synthetic_gym_review(task_id, success=True)  # the corrected continuation
+    cont_review["steps"] = cont_review["steps"][:2]  # a shorter continuation
+    sid_cont = _persist_gym_review(db_session, task_id, "openai", cont_run, cont_review, persist_raw=False)
+    assert sid_cont != sid_orig  # a distinct, additive record
+
+    # persisted-review STILL returns the original breaking run (not the continuation)
+    after = client.get(f"/api/gym/tasks/{task_id}/persisted-review").json()
+    assert len(after["steps"]) == 3 and after["gymReward"] == 0, "the original breaking run must survive + stay the base"
+    assert after["steps"] == before["steps"]
+
+    # BOTH runs are preserved in the DB (nothing deleted/overwritten)
+    task = db_session.scalar(select(models.Task).where(models.Task.external_id == task_id))
+    trajs = db_session.scalars(
+        select(models.Trajectory).join(models.ReviewSession, models.Trajectory.session_id == models.ReviewSession.id)
+        .where(models.ReviewSession.task_id == task.id)).all()
+    assert len(trajs) == 2, "both the original and the driven-forward run are retained"
+    assert sum(1 for t in trajs if t.raw is not None) == 1  # only the original is replayable
+    assert sum(1 for t in trajs if t.raw is None) == 1       # the continuation is an audit/verdict record
+
+
+def test_prompt_edit_rerun_does_not_shadow_the_canonical_breaker(client, db_session):
+    """A prompt-edit re-runs the whole task under a new prompt (a NEWER full run with
+    its own replay payload) — shown transiently in-session — but the breaker's
+    CANONICAL run (the original) stays what persisted-review reopens, so a curated
+    breaker never turns into whatever a prompt edit produced."""
+    from app.api.gym import _persist_gym_review
+
+    task_id = "M94/canonical_breaker"
+    orig_run, orig_review = _synthetic_gym_review(task_id, success=False)  # canonical breaker (3 steps, reward 0)
+    _persist_gym_review(db_session, task_id, "openai", orig_run, orig_review)
+
+    # annotator edits the prompt → a newer FULL run (with raw), which happens to solve it
+    edit_run, edit_review = _synthetic_gym_review(task_id, success=True)
+    edit_review["steps"] = edit_review["steps"][:1]  # a different, shorter run
+    _persist_gym_review(db_session, task_id, "openai", edit_run, edit_review, brief="please double-check first")
+
+    # reopening the breaker STILL shows the canonical breaking run, not the edit
+    canon = client.get(f"/api/gym/tasks/{task_id}/persisted-review").json()
+    assert len(canon["steps"]) == 3 and canon["gymReward"] == 0, "canonical breaker must survive a prompt edit"

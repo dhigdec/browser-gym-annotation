@@ -36,11 +36,15 @@ def _gym_job(fn):
     return inner
 
 
-def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review: dict, brief: str | None = None) -> str:
+def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review: dict, brief: str | None = None, persist_raw: bool = True) -> str:
     """Persist a real gym review as a proper FK-linked record: task (+ seed
     state) → session → trajectory (+ steps) + verifier suite (+ milestones) +
     benchmark run. Returns the session id. `brief` set = this run used an annotator
-    PROMPT OVERRIDE, so its brief must NOT become the canonical task prompt."""
+    PROMPT OVERRIDE, so its brief must NOT become the canonical task prompt.
+    `persist_raw=False` (drive-forward continuations) keeps the run as an
+    auditable record + a scorable verdict, but WITHOUT the replayable `raw`
+    payload — so it never shadows the ORIGINAL full breaking run that
+    `persisted-review` reopens (the original is never overwritten or lost)."""
     t = run.get("trajectory") or {}
     vr = t.get("verifier_result") or {}
     seed = int(run.get("seed", 0))
@@ -89,7 +93,7 @@ def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review
     # verbatim instead of re-driving a fresh, stochastic agent. `review` already
     # carries backendState + gymResume (set by the caller) but NOT yet sessionId
     # (added after this returns) — a shallow copy keeps that out of the snapshot.
-    traj = models.Trajectory(session_id=s.id, agent=agent, seed=seed, score=float(vr.get("score", 0.0) or 0.0), success=bool(vr.get("success")), source="gym", raw=dict(review))
+    traj = models.Trajectory(session_id=s.id, agent=agent, seed=seed, score=float(vr.get("score", 0.0) or 0.0), success=bool(vr.get("success")), source="gym", raw=(dict(review) if persist_raw else None))
     db.add(traj)
     db.flush()
     raw_steps = t.get("steps") or []  # 1:1 with review["steps"] (to_review enumerates them)
@@ -229,13 +233,24 @@ def gym_persisted_review(task_id: str, db: Session = Depends(get_db)) -> dict:
     task = db.scalar(select(models.Task).where(models.Task.external_id == task_id))
     if task is None:
         raise HTTPException(status_code=404, detail="no persisted gym review for this task")
-    traj = db.scalar(
+    # The CANONICAL run: the OLDEST trajectory carrying a real replay payload — i.e.
+    # the first full run-review of this breaker. Opening a breaker must ALWAYS show
+    # its canonical breaking run, never something layered on top:
+    #   - drive-forward continuations persist with raw=None → skipped here (a step
+    #     correction forks on top, on the human session, and never replaces this);
+    #   - a prompt-edit re-run is a NEWER full run shown transiently in-session, but
+    #     must not become the breaker's canonical view on reopen.
+    # Filtering `t.raw` in Python skips SQL NULL, legacy JSON-`null`, and empty
+    # payloads across both Postgres and SQLite.
+    trajs = db.scalars(
         select(models.Trajectory)
         .join(models.ReviewSession, models.Trajectory.session_id == models.ReviewSession.id)
-        .where(models.ReviewSession.task_id == task.id, models.Trajectory.source == "gym", models.Trajectory.raw.isnot(None))
-        .order_by(models.Trajectory.created_at.desc())
-    )
-    if traj is None or not traj.raw:
+        .where(models.ReviewSession.task_id == task.id, models.Trajectory.source == "gym")
+        .order_by(models.Trajectory.created_at.asc())
+        .limit(50)
+    ).all()
+    traj = next((t for t in trajs if t.raw), None)  # oldest real payload = the canonical breaking run
+    if traj is None:
         raise HTTPException(status_code=404, detail="no persisted gym review for this task")
     review = dict(traj.raw)
     review["persisted"] = True
@@ -315,10 +330,14 @@ def _resume_run_job(task_id: str, seed: int, state: dict, url: str, step, agent:
     review.setdefault("gymResume", {})["worldState"] = gym_client.world()
     vr = (r.get("trajectory") or {}).get("verifier_result") or {}
     review["gymReward"] = 1 if vr.get("success") else 0  # the driven-forward verdict
-    # Persist the driven-forward run as a real record too (symmetry with run-review).
+    # Persist the driven-forward run as a real, scorable record — but WITHOUT a
+    # replayable `raw` payload, so it never shadows the ORIGINAL full breaking run
+    # that persisted-review reopens. The corrected continuation itself is preserved
+    # as an immutable TrajectoryBranch on the human session (rerun-gym); its verdict
+    # is still picked up by _latest_gym_verdict for the corrected re-benchmark.
     with SessionLocal() as db:
         try:
-            review["sessionId"] = _persist_gym_review(db, task_id, agent, r, review)
+            review["sessionId"] = _persist_gym_review(db, task_id, agent, r, review, persist_raw=False)
             review["persisted"] = True
         except Exception as exc:  # noqa: BLE001 — the review still loads
             db.rollback()

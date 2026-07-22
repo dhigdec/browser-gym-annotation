@@ -108,8 +108,11 @@ class Trajectory(Base):
     # backendState + gymResume world). Persisted for gym runs so REOPENING a gym
     # task replays the SAME run — instead of re-driving a fresh, stochastic agent
     # each time (which would leave a saved correction fork restoring onto a
-    # different trajectory). Null for fixture trajectories.
-    raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # different trajectory). Null for fixture trajectories AND for drive-forward
+    # continuations (which must not shadow the original run). none_as_null=True is
+    # REQUIRED: a plain JSON column stores Python None as the JSON value `null`
+    # (not SQL NULL), so `raw IS NOT NULL` would wrongly match a payload-less row.
+    raw: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=func.now())
 
     session: Mapped[ReviewSession] = relationship(back_populates="trajectories")
