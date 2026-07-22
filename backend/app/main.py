@@ -8,6 +8,7 @@ from sqlalchemy import text
 
 from app import models  # noqa: F401 — register ORM models on Base
 from app.api.admin import router as admin_router
+from app.api.auth import router as auth_router
 from app.api.export import router as export_router
 from app.api.gym import router as gym_router
 from app.api.qa import router as qa_router
@@ -77,6 +78,7 @@ def health() -> dict:
     return {"status": "ok" if ok else "degraded", "db": "up" if ok else "down", "env": settings.env}
 
 
+app.include_router(auth_router)
 app.include_router(tasks_router)
 app.include_router(sessions_router)
 app.include_router(gym_router)

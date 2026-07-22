@@ -263,11 +263,21 @@ def test_nul_byte_in_text_fields_is_422_not_500(client):
     assert client.put(f"/api/sessions/{sid}/suite", json={"verifiers": bad2}).status_code == 422
 
 
-def test_get_or_create_annotator_is_idempotent(client, db_session):
+def test_sessions_are_isolated_per_annotator(client_for, db_session):
     from app.models import Annotator
 
-    email = "brand-new-annotator@test.io"
-    s1 = client.post("/api/tasks/GYM-2041/sessions", json={"annotatorEmail": email, "fresh": True}).json()["sessionId"]
-    s2 = client.post("/api/tasks/GYM-2041/sessions", json={"annotatorEmail": email, "fresh": True}).json()["sessionId"]
-    assert s1 != s2  # fresh=true mints two sessions
-    assert db_session.query(Annotator).filter(Annotator.email == email).count() == 1  # but exactly ONE annotator
+    ca, cb = client_for("alice@x.io"), client_for("bob@x.io")
+    sa = ca.post("/api/tasks/GYM-2041/sessions", json={}).json()["sessionId"]
+    sb = cb.post("/api/tasks/GYM-2041/sessions", json={}).json()["sessionId"]
+    assert sa != sb  # each annotator gets their OWN session for the shared task
+
+    # resume: alice re-opening (not fresh) returns HER same session, not bob's
+    assert ca.post("/api/tasks/GYM-2041/sessions", json={}).json()["sessionId"] == sa
+
+    # OWNERSHIP: bob cannot read or mutate alice's session (a UUID isn't enough)
+    assert cb.get(f"/api/sessions/{sa}").status_code == 404
+    assert cb.patch(f"/api/sessions/{sa}", json={"reviewedThrough": 1}).status_code == 404
+    assert cb.post(f"/api/sessions/{sa}/submit", json={"reward": 1}).status_code == 404
+    assert ca.get(f"/api/sessions/{sa}").status_code == 200  # alice still owns hers
+
+    assert db_session.query(Annotator).filter(Annotator.email.in_(["alice@x.io", "bob@x.io"])).count() == 2

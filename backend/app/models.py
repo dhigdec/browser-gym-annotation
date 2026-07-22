@@ -42,6 +42,12 @@ class Annotator(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     role: Mapped[str] = mapped_column(String(32), default="annotator")  # annotator | reviewer | admin
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)  # pbkdf2 (minimal auth); null = no login yet
+    # Profile — display_name/avatar_hue drive the header identity + QA rows; the
+    # avatar is a colored circle with initials (no upload needed).
+    display_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    avatar_hue: Mapped[int] = mapped_column(Integer, default=210)  # 0-359, for the avatar color
+    last_login_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)  # deactivate instead of delete
     created_at: Mapped[datetime] = mapped_column(default=func.now())
 
     sessions: Mapped[list["ReviewSession"]] = relationship(back_populates="annotator")
@@ -82,6 +88,11 @@ class ReviewSession(Base):
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
     rerun_from: Mapped[int | None] = mapped_column(nullable=True)
     reviewed_through: Mapped[int] = mapped_column(Integer, default=0)  # granular per-step review progress
+    # For a SYSTEM gym run produced by an annotator's correction (drive-forward),
+    # the HUMAN session that triggered it. Lets a corrected re-benchmark score from
+    # THAT annotator's own correction, never another annotator's — the isolation
+    # fix for the task-global verdict leak. Null for canonical/prompt-edit runs.
+    origin_session_id: Mapped[UUID | None] = mapped_column(ForeignKey("review_session.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(default=func.now())
     updated_at: Mapped[datetime] = mapped_column(default=func.now(), onupdate=func.now())
 

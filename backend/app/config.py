@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     auth_cookie: str = "bg_auth"
     auth_ttl_hours: int = 168  # 7 days
     auth_enabled: bool = True
+    # Open self-registration is OFF: accounts are the 5 seeded dummy annotators
+    # (see seed.py). This also closes the account-claim takeover hole. Flip on via
+    # ALLOW_REGISTRATION=1 when self-signup is wanted.
+    allow_registration: bool = False
 
 
 settings = Settings()

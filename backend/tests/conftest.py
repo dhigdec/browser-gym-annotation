@@ -1,14 +1,24 @@
 """Test fixtures. The API runs against an in-memory SQLite DB (via a get_db
-override) so tests need no Postgres and stay isolated per test."""
+override) so tests need no Postgres and stay isolated per test.
+
+Auth is enforced on the API, so the default `client` is authenticated as a seeded
+test annotator. Use `client_for(email)` to get a client acting as a DIFFERENT
+annotator (multi-annotator / ownership tests), and `anon_client` for the
+unauthenticated (401) path."""
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app import auth as authmod
+from app.config import settings
 from app.db import Base, get_db
 from app.main import app
+from app.models import Annotator
+
+TEST_EMAIL = "test@deccan.ai"
 
 
 @pytest.fixture()
@@ -24,11 +34,67 @@ def _engine():
 
 
 @pytest.fixture()
-def client(_engine):
-    TestingSession = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
+def _session_factory(_engine):
+    return sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
+
+
+def _ensure_annotator(factory, email: str, role: str = "annotator") -> None:
+    with factory() as db:
+        if db.scalar(select(Annotator).where(Annotator.email == email)) is None:
+            db.add(Annotator(email=email, password_hash=authmod.hash_password("testpass1"), role=role))
+            db.commit()
+
+
+@pytest.fixture()
+def client(_engine, _session_factory):
+    def override_get_db():
+        db = _session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as c:
+        _ensure_annotator(_session_factory, TEST_EMAIL)
+        c.cookies.set(settings.auth_cookie, authmod.make_token(TEST_EMAIL))
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def client_for(_engine, _session_factory):
+    """Factory → a TestClient authenticated as an arbitrary (auto-created) annotator.
+    Lets a test act as several distinct accounts (ownership / QA aggregation)."""
 
     def override_get_db():
-        db = TestingSession()
+        db = _session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    made = []
+
+    def _make(email: str, role: str = "annotator") -> TestClient:
+        _ensure_annotator(_session_factory, email, role)
+        c = TestClient(app)
+        c.cookies.set(settings.auth_cookie, authmod.make_token(email))
+        made.append(c)
+        return c
+
+    yield _make
+    for c in made:
+        c.close()
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def anon_client(_engine, _session_factory):
+    """An UNauthenticated client — for asserting protected routes 401."""
+    def override_get_db():
+        db = _session_factory()
         try:
             yield db
         finally:
@@ -41,10 +107,9 @@ def client(_engine):
 
 
 @pytest.fixture()
-def db_session(_engine):
+def db_session(_engine, _session_factory):
     """A read session bound to the same DB the API writes to (for assertions)."""
-    TestingSession = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
-    db = TestingSession()
+    db = _session_factory()
     try:
         yield db
     finally:

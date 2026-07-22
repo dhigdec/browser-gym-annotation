@@ -8,8 +8,40 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import gym_client, models
+from app import auth, gym_client, models
 from app.api.tasks import _TASKS
+
+# Five dummy annotator accounts to test the multi-annotator flow (login-only; open
+# self-registration is off). Shared dev password below — TEST ACCOUNTS ONLY. One
+# reviewer is seeded so the QA/adjudication path can be exercised.
+_DEV_PASSWORD = "annotate1"  # dev-only dummy credential for the seeded test accounts
+_DUMMY_ANNOTATORS = [
+    ("ana@deccan.ai", "Ana Rivera", 210, "reviewer"),
+    ("ben@deccan.ai", "Ben Okafor", 145, "annotator"),
+    ("chloe@deccan.ai", "Chloe Tan", 335, "annotator"),
+    ("diego@deccan.ai", "Diego Santos", 28, "annotator"),
+    ("ela@deccan.ai", "Ela Novak", 268, "annotator"),
+]
+
+
+def seed_annotators(db: Session) -> int:
+    """Ensure the 5 dummy test accounts exist (idempotent). Sets a password only
+    if one isn't already set, so re-seeding never resets a changed password."""
+    created = 0
+    for email, name, hue, role in _DUMMY_ANNOTATORS:
+        a = db.scalar(select(models.Annotator).where(models.Annotator.email == email))
+        if a is None:
+            a = models.Annotator(email=email)
+            db.add(a)
+            created += 1
+        a.display_name = a.display_name or name
+        a.avatar_hue = hue
+        a.role = role
+        a.is_active = True
+        if not a.password_hash:
+            a.password_hash = auth.hash_password(_DEV_PASSWORD)
+    db.commit()
+    return created
 
 
 def _upsert_fixture(db: Session, external_id: str, fx: dict) -> None:
@@ -52,4 +84,5 @@ def seed_catalog(db: Session) -> dict:
             ))
             gym_added += 1
     db.commit()
-    return {"fixtures": len(_TASKS), "gym_added": gym_added, "gym_reachable": ids is not None}
+    annotators = seed_annotators(db)
+    return {"fixtures": len(_TASKS), "gym_added": gym_added, "gym_reachable": ids is not None, "annotators_created": annotators}

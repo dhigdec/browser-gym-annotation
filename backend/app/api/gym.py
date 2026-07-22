@@ -36,7 +36,7 @@ def _gym_job(fn):
     return inner
 
 
-def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review: dict, brief: str | None = None, persist_raw: bool = True) -> str:
+def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review: dict, brief: str | None = None, persist_raw: bool = True, origin_session_id: str | None = None) -> str:
     """Persist a real gym review as a proper FK-linked record: task (+ seed
     state) → session → trajectory (+ steps) + verifier suite (+ milestones) +
     benchmark run. Returns the session id. `brief` set = this run used an annotator
@@ -84,7 +84,15 @@ def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review
         db.add(ann)
         db.flush()
 
-    s = models.ReviewSession(task_id=task.id, annotator_id=ann.id, source="gym", seed=seed, agent=agent, status="benchmark_run")
+    origin = None
+    if origin_session_id:
+        from uuid import UUID as _UUID
+        try:
+            origin = _UUID(str(origin_session_id))
+        except (ValueError, TypeError):
+            origin = None
+    s = models.ReviewSession(task_id=task.id, annotator_id=ann.id, source="gym", seed=seed, agent=agent,
+                             status="benchmark_run", origin_session_id=origin)
     db.add(s)
     db.flush()
 
@@ -314,7 +322,7 @@ def gym_resume(body: ResumeBody) -> dict:
 
 
 @_gym_job
-def _resume_run_job(task_id: str, seed: int, state: dict, url: str, step, agent: str) -> dict:
+def _resume_run_job(task_id: str, seed: int, state: dict, url: str, step, agent: str, origin_session_id: str | None = None) -> dict:
     r = gym_client.resume_run(task_id, seed, state, url, step, agent)
     if r is None:
         raise jobs.JobFailure("gym unreachable, task not found, or resume-run failed")
@@ -337,7 +345,7 @@ def _resume_run_job(task_id: str, seed: int, state: dict, url: str, step, agent:
     # is still picked up by _latest_gym_verdict for the corrected re-benchmark.
     with SessionLocal() as db:
         try:
-            review["sessionId"] = _persist_gym_review(db, task_id, agent, r, review, persist_raw=False)
+            review["sessionId"] = _persist_gym_review(db, task_id, agent, r, review, persist_raw=False, origin_session_id=origin_session_id)
             review["persisted"] = True
         except Exception as exc:  # noqa: BLE001 — the review still loads
             db.rollback()
@@ -354,6 +362,7 @@ class ResumeRunBody(BaseModel):
     resumeStep: int | None = None
     resumeUrl: str = "/"
     agent: str = "llm"
+    sessionId: str | None = None  # the HUMAN session driving the correction → verdict isolation
 
 
 def _gate_policies(brief: str, golden_trace: list[dict], actions: list[dict]) -> list[dict]:
@@ -545,7 +554,7 @@ def gym_resume_run(body: ResumeRunBody) -> dict:
     Slow + (for LLM agents) stochastic — runs as a job; poll GET /api/gym/jobs/{id}."""
     state = _apply_edits(body.worldState, body.edits) if body.edits else body.worldState
     job = jobs.store.submit(
-        "resume-run", _resume_run_job, body.taskId, body.seed, state, body.resumeUrl, body.resumeStep, body.agent
+        "resume-run", _resume_run_job, body.taskId, body.seed, state, body.resumeUrl, body.resumeStep, body.agent, body.sessionId
     )
     return {"jobId": job.id, "status": job.status}
 

@@ -354,3 +354,34 @@ def test_prompt_edit_rerun_does_not_shadow_the_canonical_breaker(client, db_sess
     # reopening the breaker STILL shows the canonical breaking run, not the edit
     canon = client.get(f"/api/gym/tasks/{task_id}/persisted-review").json()
     assert len(canon["steps"]) == 3 and canon["gymReward"] == 0, "canonical breaker must survive a prompt edit"
+
+
+def test_gym_verdict_is_isolated_per_annotator(client_for, db_session):
+    """The cross-annotator leak fix: an UNcorrected annotator scores from the shared
+    CANONICAL breaker; a corrected annotator scores from THEIR OWN correction —
+    never from another annotator's correction verdict."""
+    from app.api.gym import _persist_gym_review
+
+    task = "M90/verdict_iso"
+    # canonical breaker (reward 0) — the shared run everyone starts from
+    r0, rev0 = _synthetic_gym_review(task, success=False)
+    _persist_gym_review(db_session, task, "openai", r0, rev0)
+    suite = [{"id": v["id"], "level": v["level"], "assertion": v["assertion"], "code": v["code"],
+              "check": None, "failsUntilCorrected": False, "placeholder": False,
+              "addedByHuman": False, "gymResult": v.get("gymResult")} for v in rev0["verifiers"]]
+
+    cx, cy = client_for("x@iso.io"), client_for("y@iso.io")
+    sx = cx.post(f"/api/tasks/{task}/sessions", json={"fresh": True}).json()["sessionId"]
+    sy = cy.post(f"/api/tasks/{task}/sessions", json={"fresh": True}).json()["sessionId"]
+
+    # X corrects: mark a rerun point + persist X's correction run (reward 1) linked to sx
+    cx.patch(f"/api/sessions/{sx}", json={"rerunFrom": 1})
+    rc, revc = _synthetic_gym_review(task, success=True)
+    _persist_gym_review(db_session, task, "openai", rc, revc, persist_raw=False, origin_session_id=sx)
+
+    def bench(c, sid, corrected):
+        c.put(f"/api/sessions/{sid}/suite", json={"verifiers": suite})
+        return c.post(f"/api/sessions/{sid}/run", json={"corrected": corrected, "verifiers": [], "overrides": []}).json()["reward"]
+
+    assert bench(cx, sx, True) == 1   # X scores from X's OWN correction
+    assert bench(cy, sy, False) == 0  # Y scores from the CANONICAL breaker, NOT X's correction

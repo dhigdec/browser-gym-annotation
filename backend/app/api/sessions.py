@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.agent import deterministic_branch, generate_branch
 from app.api.tasks import _FIXTURE, task_fixture
+from app.auth import current_annotator
 from app.db import get_db
 from app.verify import evaluate
 from app.models import (
@@ -209,28 +210,48 @@ def _persisted_verifiers(db: Session, suite: VerifierSuite) -> list[dict]:
     ]
 
 
-def _latest_gym_verdict(db: Session, task_id: UUID) -> BenchmarkRun | None:
-    """The authoritative gym-engine verdict for a task: the newest SYSTEM gym
-    review's benchmark run (reward + per-milestone results). System gym sessions
-    carry an `agent`; a human review session does not — so this never picks up the
-    human's own session. After a drive-forward correction a fresh system review is
-    persisted, so 'latest' is the CORRECTED verdict, and re-benchmarking reflects
-    the fix."""
-    sys_sessions = db.scalars(
-        select(ReviewSession)
-        .where(ReviewSession.task_id == task_id, ReviewSession.source == "gym", ReviewSession.agent != "")
-        .order_by(ReviewSession.created_at.desc())
+def _latest_benchmark_for_session(db: Session, session_id: UUID) -> BenchmarkRun | None:
+    suite = _latest_suite(db, session_id)
+    if suite is None:
+        return None
+    return db.scalar(select(BenchmarkRun).where(BenchmarkRun.suite_id == suite.id).order_by(BenchmarkRun.created_at.desc()))
+
+
+def _canonical_gym_verdict(db: Session, task_id: UUID) -> BenchmarkRun | None:
+    """The CANONICAL breaker verdict for a task — the benchmark of the OLDEST gym
+    system run carrying a real replay payload (mirrors gym persisted-review's
+    'oldest raw' selection), so every annotator's baseline scores from the exact
+    breaker they see, never a stranger's re-run."""
+    trajs = db.scalars(
+        select(Trajectory)
+        .join(ReviewSession, ReviewSession.id == Trajectory.session_id)
+        .where(ReviewSession.task_id == task_id, Trajectory.source == "gym")
+        .order_by(Trajectory.created_at.asc())
+        .limit(50)
     ).all()
-    for ss in sys_sessions:
-        suite = _latest_suite(db, ss.id)
-        if suite is None:
-            continue
-        br = db.scalar(
-            select(BenchmarkRun).where(BenchmarkRun.suite_id == suite.id).order_by(BenchmarkRun.created_at.desc())
-        )
-        if br is not None:
-            return br
-    return None
+    canon = next((t for t in trajs if t.raw), None)
+    return _latest_benchmark_for_session(db, canon.session_id) if canon is not None else None
+
+
+def _gym_verdict_for(db: Session, s: ReviewSession) -> BenchmarkRun | None:
+    """The gym verdict to score a HUMAN session's benchmark from — scoped to THAT
+    annotator, closing the task-global cross-annotator leak:
+      • corrected   → the annotator's OWN correction run (origin-linked to s);
+      • uncorrected → the shared CANONICAL breaker verdict.
+    Never another annotator's correction. System gym sessions carry an `agent`; a
+    human session does not, so the human's own session is never selected here."""
+    if s.rerun_from is not None:
+        corr = db.scalars(
+            select(ReviewSession)
+            .where(ReviewSession.task_id == s.task_id, ReviewSession.source == "gym",
+                   ReviewSession.agent != "", ReviewSession.origin_session_id == s.id)
+            .order_by(ReviewSession.created_at.desc())
+        ).all()
+        for ss in corr:
+            br = _latest_benchmark_for_session(db, ss.id)
+            if br is not None:
+                return br  # this annotator's own corrected verdict
+    return _canonical_gym_verdict(db, s.task_id)
 
 
 def _run_benchmark(db: Session, s: ReviewSession, corrected: bool, overrides: set[str]) -> dict:
@@ -245,7 +266,7 @@ def _run_benchmark(db: Session, s: ReviewSession, corrected: bool, overrides: se
         # persisted system run) instead — the client can't reach it, so the stored
         # reward stays server-authoritative — and record it against the human's
         # suite so the session reaches benchmark_run and becomes submittable.
-        gym_br = _latest_gym_verdict(db, s.task_id)
+        gym_br = _gym_verdict_for(db, s)
         if gym_br is None:
             raise HTTPException(status_code=409, detail="no gym run recorded for this task — open it to run the agent first")
         results = dict(gym_br.results or {})
@@ -379,6 +400,17 @@ def _snapshot(db: Session, s: ReviewSession) -> dict:
     }
 
 
+def _owned_session(db: Session, session_id: UUID, current: Annotator, *, lock: bool = False) -> ReviewSession:
+    """Fetch a session AND enforce it belongs to the signed-in annotator. This is
+    the per-resource ownership check that stops annotator A from reading/mutating
+    annotator B's work — a session UUID alone must never be enough."""
+    s = _get_session(db, session_id, lock=lock)
+    if s.annotator_id != current.id:
+        # 404 (not 403) so a session's existence isn't disclosed to a non-owner.
+        raise HTTPException(status_code=404, detail="session not found")
+    return s
+
+
 def _get_session(db: Session, session_id: UUID, *, lock: bool = False) -> ReviewSession:
     # lock=True takes a row lock (SELECT ... FOR UPDATE) so the mutating endpoints
     # serialize on the session row — this closes the run-vs-submit TOCTOU where a
@@ -437,19 +469,20 @@ def _branch_for(correction: str, mode: str, from_step: int, fixture: dict) -> tu
 
 
 @router.post("/tasks/{external_id:path}/sessions")
-def open_session(external_id: str, body: OpenSessionBody, db: Session = Depends(get_db)) -> dict:
-    """Resume the annotator's most recent session for this task, or start one.
-    Works for both hand-authored fixtures AND gym tasks (the breakers, whose ids
-    contain a '/'). `fresh=true` always starts a NEW session. The annotator's
-    gate progress (status, reviewed_through, suite, corrections) persists here
-    regardless of source, so a breaker review survives a refresh like a fixture."""
+def open_session(external_id: str, body: OpenSessionBody, current: Annotator = Depends(current_annotator), db: Session = Depends(get_db)) -> dict:
+    """Resume the SIGNED-IN annotator's most recent session for this task, or start
+    one. Works for both hand-authored fixtures AND gym tasks (the breakers, whose
+    ids contain a '/'). `fresh=true` always starts a NEW session. Gate progress
+    (status, reviewed_through, suite, corrections) persists per annotator, so a
+    breaker review survives a refresh like a fixture — and each annotator gets
+    their OWN private session for the same shared task."""
     fixture = task_fixture(external_id)
     task = db.scalar(select(Task).where(Task.external_id == external_id))
     if task is None:
         if fixture is None:
             raise HTTPException(status_code=404, detail="task not found")
         task = _seed_task(db, external_id)  # lazily seed a known fixture
-    ann = _default_annotator(db, body.annotatorEmail)
+    ann = current  # identity from the auth token — NEVER the (spoofable) request body
     existing = None
     if not body.fresh:
         existing = db.scalar(
@@ -470,13 +503,13 @@ def open_session(external_id: str, body: OpenSessionBody, db: Session = Depends(
 
 
 @router.get("/sessions/{session_id}")
-def get_session(session_id: UUID, db: Session = Depends(get_db)) -> dict:
-    return _snapshot(db, _get_session(db, session_id))
+def get_session(session_id: UUID, current: Annotator = Depends(current_annotator), db: Session = Depends(get_db)) -> dict:
+    return _snapshot(db, _owned_session(db, session_id, current))
 
 
 @router.patch("/sessions/{session_id}")
-def patch_session(session_id: UUID, body: PatchSessionBody, db: Session = Depends(get_db)) -> dict:
-    s = _get_session(db, session_id, lock=True)
+def patch_session(session_id: UUID, body: PatchSessionBody, current: Annotator = Depends(current_annotator), db: Session = Depends(get_db)) -> dict:
+    s = _owned_session(db, session_id, current, lock=True)
     # A submitted session is immutable — no status/correction changes via PATCH.
     if s.status == "submitted":
         raise HTTPException(status_code=409, detail="session is submitted (immutable) — start a new session to re-annotate")
@@ -509,11 +542,11 @@ def patch_session(session_id: UUID, body: PatchSessionBody, db: Session = Depend
 
 
 @router.post("/sessions/{session_id}/rerun")
-def rerun(session_id: UUID, body: RerunBody, db: Session = Depends(get_db)) -> dict:
+def rerun(session_id: UUID, body: RerunBody, current: Annotator = Depends(current_annotator), db: Session = Depends(get_db)) -> dict:
     """Re-run the agent from a corrected step. Persists an IMMUTABLE branch —
     versioned via parent_id, never overwritten — capturing the human correction.
     The continuation is deterministic today; a live agent plugs in at mode='agent'."""
-    s = _get_session(db, session_id, lock=True)
+    s = _owned_session(db, session_id, current, lock=True)
     if s.status == "submitted":
         raise HTTPException(status_code=409, detail="session is submitted (immutable) — start a new session to re-annotate")
     fixture = _session_fixture(db, s)
@@ -544,13 +577,13 @@ def rerun(session_id: UUID, body: RerunBody, db: Session = Depends(get_db)) -> d
 
 
 @router.post("/sessions/{session_id}/rerun-gym")
-def rerun_gym(session_id: UUID, body: RerunGymBody, db: Session = Depends(get_db)) -> dict:
+def rerun_gym(session_id: UUID, body: RerunGymBody, current: Annotator = Depends(current_annotator), db: Session = Depends(get_db)) -> dict:
     """Persist a gym drive-forward branch on the session. Unlike /rerun (which
     synthesises the branch from a fixture), the branch here was produced by the
     LIVE gym agent continuing from the corrected state; the client passes it in so
     the fork is durable — rerun_from + the branch round-trip via _snapshot, so a
     reload reconstructs the exact same forked trajectory."""
-    s = _get_session(db, session_id, lock=True)
+    s = _owned_session(db, session_id, current, lock=True)
     if s.status == "submitted":
         raise HTTPException(status_code=409, detail="session is submitted (immutable) — start a new session to re-annotate")
     if not 0 <= body.fromStep <= 10000:
@@ -577,9 +610,9 @@ def rerun_gym(session_id: UUID, body: RerunGymBody, db: Session = Depends(get_db
 
 
 @router.put("/sessions/{session_id}/suite")
-def save_suite(session_id: UUID, body: SaveSuiteBody, db: Session = Depends(get_db)) -> dict:
+def save_suite(session_id: UUID, body: SaveSuiteBody, current: Annotator = Depends(current_annotator), db: Session = Depends(get_db)) -> dict:
     """Persist the current verifier suite as a new immutable version."""
-    s = _get_session(db, session_id, lock=True)
+    s = _owned_session(db, session_id, current, lock=True)
     _assert_not_submitted(s)
     # Reward results are keyed by the authoring id — a duplicate id would let one
     # verifier's verdict overwrite another's, masking a failing/placeholder check.
@@ -623,13 +656,13 @@ def save_suite(session_id: UUID, body: SaveSuiteBody, db: Session = Depends(get_
 
 
 @router.post("/sessions/{session_id}/run")
-def run_verifiers(session_id: UUID, body: RunBody, db: Session = Depends(get_db)) -> dict:
+def run_verifiers(session_id: UUID, body: RunBody, current: Annotator = Depends(current_annotator), db: Session = Depends(get_db)) -> dict:
     """Execute the PERSISTED verifier suite for real against the captured DOM +
     ground-truth state + trace, record the run, and return the true per-verifier
     results. The reward is computed server-side from the stored suite — the
     client's `verifiers` are ignored for scoring, so a fabricated passing check
     cannot inflate the reward."""
-    s = _get_session(db, session_id, lock=True)
+    s = _owned_session(db, session_id, current, lock=True)
     _assert_not_submitted(s)
     out = _run_benchmark(db, s, body.corrected, set(body.overrides))
     db.commit()
@@ -637,10 +670,10 @@ def run_verifiers(session_id: UUID, body: RunBody, db: Session = Depends(get_db)
 
 
 @router.post("/sessions/{session_id}/benchmark")
-def record_benchmark(session_id: UUID, body: BenchmarkBody, db: Session = Depends(get_db)) -> dict:
+def record_benchmark(session_id: UUID, body: BenchmarkBody, current: Annotator = Depends(current_annotator), db: Session = Depends(get_db)) -> dict:
     """Deprecated alias for /run — kept for back-compat. Recomputes the reward
     from the persisted suite; the client-supplied `reward` is ignored."""
-    s = _get_session(db, session_id, lock=True)
+    s = _owned_session(db, session_id, current, lock=True)
     _assert_not_submitted(s)
     _run_benchmark(db, s, body.corrected, set(body.overrides))
     db.commit()
@@ -648,11 +681,11 @@ def record_benchmark(session_id: UUID, body: BenchmarkBody, db: Session = Depend
 
 
 @router.post("/sessions/{session_id}/submit")
-def submit(session_id: UUID, body: SubmitBody, db: Session = Depends(get_db)) -> dict:
+def submit(session_id: UUID, body: SubmitBody, current: Annotator = Depends(current_annotator), db: Session = Depends(get_db)) -> dict:
     """Write the dataset row. The reward stored is the AUTHORITATIVE server-computed
     reward from the latest benchmark run of the persisted suite — never the
     client-asserted `body.reward`. A benchmark must have been run first."""
-    s = _get_session(db, session_id, lock=True)
+    s = _owned_session(db, session_id, current, lock=True)
     if s.status == "submitted":
         # Immutable once submitted — start a fresh session to re-annotate
         # (POST /tasks/{id}/sessions with fresh=true) rather than superseding.
