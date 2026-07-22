@@ -118,6 +118,15 @@ class RerunBody(_NulSafe):
     mode: str = "deterministic"  # deterministic (oracle/gold path) | agent (live, M6b)
 
 
+class RerunGymBody(_NulSafe):
+    """A gym drive-forward branch, already produced by the live gym agent — the
+    client persists it on the human's session so the fork round-trips on reload."""
+    fromStep: int
+    steps: list[dict]
+    mode: str = "agent"
+    correction: str = ""
+
+
 class SubmitBody(_NulSafe):
     reward: int
     override: bool = False
@@ -479,6 +488,39 @@ def rerun(session_id: UUID, body: RerunBody, db: Session = Depends(get_db)) -> d
     _audit(db, "", "agent.rerun", str(s.id), {"fromStep": body.fromStep, "mode": actual_mode, "correction": body.correction[:200]}, session_id=s.id)
     db.commit()
     return {"fromStep": body.fromStep, "mode": actual_mode, "steps": branch_steps}
+
+
+@router.post("/sessions/{session_id}/rerun-gym")
+def rerun_gym(session_id: UUID, body: RerunGymBody, db: Session = Depends(get_db)) -> dict:
+    """Persist a gym drive-forward branch on the session. Unlike /rerun (which
+    synthesises the branch from a fixture), the branch here was produced by the
+    LIVE gym agent continuing from the corrected state; the client passes it in so
+    the fork is durable — rerun_from + the branch round-trip via _snapshot, so a
+    reload reconstructs the exact same forked trajectory."""
+    s = _get_session(db, session_id, lock=True)
+    if s.status == "submitted":
+        raise HTTPException(status_code=409, detail="session is submitted (immutable) — start a new session to re-annotate")
+    if not 0 <= body.fromStep <= 10000:
+        raise HTTPException(status_code=422, detail="fromStep out of range")
+    parent = db.scalar(
+        select(TrajectoryBranch)
+        .where(TrajectoryBranch.session_id == s.id)
+        .order_by(TrajectoryBranch.created_at.desc())
+    )
+    br = TrajectoryBranch(
+        session_id=s.id,
+        parent_id=parent.id if parent else None,
+        from_step=body.fromStep,
+        correction=body.correction,
+        mode=body.mode or "agent",
+        steps={"steps": body.steps},
+    )
+    db.add(br)
+    s.rerun_from = body.fromStep
+    s.status = "draft"  # a correction re-locks Section 2 (spec §3.25)
+    _audit(db, "", "agent.rerun_gym", str(s.id), {"fromStep": body.fromStep, "branchLen": len(body.steps)}, session_id=s.id)
+    db.commit()
+    return {"fromStep": body.fromStep, "mode": br.mode, "steps": body.steps}
 
 
 @router.put("/sessions/{session_id}/suite")

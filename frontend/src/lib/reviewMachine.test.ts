@@ -121,6 +121,15 @@ describe("correction", () => {
     expect(steps[steps.length - 1].description).toBe("agent step");
   });
 
+  it("leaves the re-run branch UNREVIEWED — only the walked prefix stays reviewed", () => {
+    const walked: ReviewState = { ...makeInitialState(data), verifiedThrough: 3 };
+    const branch = [{ idx: 3, type: "click" as const, tabId: "shop", description: "x" }];
+    const s = reducer(walked, { t: "correctAndRerun", fromStep: 2, branch, mode: "agent" });
+    expect(s.verifiedThrough).toBe(2); // capped at the correction point, not auto-marked to total
+    expect(visibleSteps(s).length).toBe(3); // slice(0,2) + branch(1) — the new step 3 needs review
+    expect(s.stepsApproved).toBe(false);
+  });
+
   it("forks at the correction point (not the error) and never overruns the playhead", () => {
     // Correct a LATE step with a SHORT branch — used to crash (step past array end).
     const branch = [{ idx: 2, type: "click" as const, tabId: "shop", description: "b" }];

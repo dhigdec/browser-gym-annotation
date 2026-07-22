@@ -43,7 +43,7 @@ export type Action =
   | { t: "approveRemaining" }
   | { t: "generate" }
   | { t: "benchmarkComplete"; results: Record<string, string> }
-  | { t: "correctAndRerun"; fromStep: number; branch: Step[] | null; mode: string | null }
+  | { t: "correctAndRerun"; fromStep: number; branch: Step[] | null; mode: string | null; gymReward?: number }
   | { t: "gymResumed"; reward: number }
   | { t: "setLevel"; level: VerifierLevel }
   | { t: "addVerifier"; verifier: Verifier }
@@ -106,7 +106,9 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
     case "correctAndRerun": {
       // Correcting a step re-forks the trace and RE-LOCKS Section 2 entirely
       // (spec §3.25): the annotator must re-approve, re-generate, and re-run.
-      // The re-run steps are auto-marked reviewed (Reviewed N/N, spec §2.3).
+      // The NEW re-run steps start UNREVIEWED — only the prefix the annotator
+      // already walked (idx ≤ fromStep) stays reviewed, so they must step through
+      // the fresh continuation before approving (Reviewed fromStep/total).
       // Fork at the ACTUAL correction point: keep the first `fromStep` steps and
       // append the branch (the backend re-indexes it contiguously from
       // fromStep+1), so the count/total agree and the playhead can never overrun
@@ -118,13 +120,16 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
         rerunFrom: a.fromStep,
         branchTail: a.branch,
         rerunMode: a.mode,
-        verifiedThrough: newTotal,
+        verifiedThrough: Math.min(s.verifiedThrough, a.fromStep),
         stepsApproved: false,
         verifiersGenerated: false,
         benchmarkRun: false,
         results: {},
         overrides: {},
         submitted: false,
+        // A gym drive-forward carries the LIVE re-verified reward on the corrected
+        // run; stash it so the score shows and the re-run reveals the real verdict.
+        gymResumeReward: a.gymReward ?? s.gymResumeReward,
         step: Math.min(Math.max(a.fromStep - 1, 0), newTotal - 1),
       };
     }
@@ -205,9 +210,12 @@ export function visibleSteps(s: ReviewState): Step[] {
 export function runSummary(s: ReviewState): Metric[] {
   if (s.rerunFrom == null) return s.data.task.runSummary;
   const total = visibleSteps(s).length;
+  const gymScore = s.data.source === "gym" && s.gymResumeReward != null ? s.gymResumeReward : null;
   return s.data.task.runSummary.map((m) => {
     if (m.label === "Errors") return { value: "0", label: "Errors (resolved)", tone: "success" };
     if (m.label === "Steps used") return { ...m, value: `${total}/20` };
+    // After a gym drive-forward, show the RE-VERIFIED score on the corrected run.
+    if (m.label === "Score" && gymScore != null) return { ...m, value: gymScore.toFixed(2), tone: gymScore >= 1 ? "success" : "error" };
     return m;
   });
 }

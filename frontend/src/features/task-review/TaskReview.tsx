@@ -13,6 +13,7 @@ import {
   fetchTasks,
   openSession,
   patchSession,
+  rerunGymBranch,
   rerunTrajectory,
   resumeGymReview,
   runGymReview,
@@ -115,6 +116,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [promptOverride, setPromptOverride] = useState<string | null>(null);
   const [driving, setDriving] = useState<null | "queued" | "running">(null);
+  const [driveError, setDriveError] = useState<string | null>(null);
   const [autogen, setAutogen] = useState<null | "queued" | "running">(null);
   const [autogenResult, setAutogenResult] = useState<AutogenResult | null>(null);
   const [editingState, setEditingState] = useState(false);
@@ -288,6 +290,12 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
   return (
     <Frame>
       <Header {...nav} />
+      {driving && <GymLoading taskId={data.task.id} phase={driving} />}
+      {driveError && (
+        <div onClick={() => setDriveError(null)} title="Dismiss" style={{ position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", background: t.redLite, color: t.redDark, border: `1px solid color-mix(in srgb, ${t.red} 42%, ${t.n9})`, padding: "10px 16px", borderRadius: t.radiusLg, fontSize: "0.84rem", fontWeight: weight.semibold, zIndex: 70, cursor: "pointer", maxWidth: 540, boxShadow: t.shadowLg }}>
+          {driveError}
+        </div>
+      )}
       <div style={{ padding: "16px 16px 8px" }}>
         <SectionHeader n={1} title="Review & correct the agent run" subtitle="Verify each step; correct any step to re-run the agent from that state." right={
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -301,15 +309,25 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
             {data.source === "gym" && data.gymResume && (
               <span
                 onClick={driving ? undefined : async () => {
+                  // Continue the task from where it stopped: drive the live agent
+                  // forward from the final state and fork on the new steps.
+                  setDriveError(null);
+                  const fromStep = steps.length;
                   setDriving("queued");
                   const res = await driveForwardGym(
-                    { taskId: data.task.id, seed: data.gymResume!.seed, worldState: data.gymResume!.worldState, resumeUrl: data.gymResume!.finalUrl || "/", agent: "llm" },
+                    { taskId: data.task.id, seed: data.gymResume!.seed, worldState: data.gymResume!.worldState, resumeUrl: data.gymResume!.finalUrl || "/", resumeStep: fromStep, agent: "openai" },
                     { onStatus: (s) => setDriving(s === "done" || s === "error" ? null : s) },
                   );
                   setDriving(null);
-                  if (res) dispatch({ t: "gymResumed", reward: res.reward });
+                  if (res && res.steps.length) {
+                    const branch = res.steps.map((s, i) => ({ ...s, idx: fromStep + i + 1 }));
+                    if (sessionId) await rerunGymBranch(sessionId, { fromStep, steps: branch, mode: "agent" });
+                    dispatch({ t: "correctAndRerun", fromStep, branch, mode: "agent", gymReward: res.reward });
+                  } else {
+                    setDriveError("The live agent couldn't continue — the gym may be unreachable or the model unavailable.");
+                  }
                 }}
-                title="Load the corrected state and let a live agent continue the task in the gym (slow)"
+                title="Load the corrected state and let a live agent (gpt-5.1) continue the task in the gym (slow)"
                 style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, background: t.n9, color: driving ? t.n3 : t.primary6, fontSize: "0.75rem", fontWeight: weight.semibold, cursor: driving ? "default" : "pointer", whiteSpace: "nowrap" }}>
                 {driving ? (driving === "queued" ? "Queued…" : "Agent driving…") : "⚡ Drive forward (live agent)"}
               </span>
@@ -342,30 +360,47 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
               onCancelCorrect={() => setCorrecting(false)}
               onSaveCorrect={async (text) => {
                 setCorrecting(false);
-                // Gym tasks resume from the corrected state IN THE LIVE GYM: load
-                // the captured world, replay the trajectory, and read the REAL
-                // milestone verdict — not a canned tail. (Fixture tasks below use
-                // the deterministic/agent branch.)
+                setDriveError(null);
+                const fromStep = current.idx;
+                // Gym tasks DRIVE A LIVE AGENT FORWARD from the corrected mid-episode
+                // state (gpt-5.1) and fork the trajectory with the real continuation
+                // — the genuine "re-run from this step" loop. The new steps are
+                // persisted on the session so the fork survives a reload, and the
+                // annotator re-does the pipeline (re-approve → verifiers → run).
                 if (data.source === "gym" && data.gymResume) {
                   const edits = parseStateEdits(text); // `path = value` lines → real state edits
-                  const res = await resumeGymReview({
-                    taskId: data.task.id,
-                    seed: data.gymResume.seed,
-                    worldState: data.gymResume.worldState,
-                    urlTrail: data.gymResume.urlTrail,
-                    finalUrl: data.gymResume.finalUrl,
-                    edits: Object.keys(edits).length ? edits : undefined,
-                  });
-                  if (res) dispatch({ t: "gymResumed", reward: res.reward });
+                  const resumeUrl = data.gymResume.urlTrail[fromStep - 1] || data.gymResume.finalUrl || "/";
+                  setDriving("queued");
+                  const res = await driveForwardGym(
+                    {
+                      taskId: data.task.id,
+                      seed: data.gymResume.seed,
+                      worldState: data.gymResume.worldState,
+                      edits: Object.keys(edits).length ? edits : undefined,
+                      resumeUrl,
+                      resumeStep: fromStep,
+                      agent: "openai", // gpt-5.1 — genuinely continues from the corrected state
+                    },
+                    { onStatus: (s) => setDriving(s === "done" || s === "error" ? null : s) },
+                  );
+                  setDriving(null);
+                  if (res && res.steps.length) {
+                    // Fork at the correction point: re-index the continuation to fromStep+1…
+                    const branch = res.steps.map((s, i) => ({ ...s, idx: fromStep + i + 1 }));
+                    if (sessionId) await rerunGymBranch(sessionId, { fromStep, steps: branch, mode: "agent" });
+                    dispatch({ t: "correctAndRerun", fromStep, branch, mode: "agent", gymReward: res.reward });
+                  } else {
+                    setDriveError("The live agent couldn't continue from that state — the gym may be unreachable or the model unavailable. Try again.");
+                  }
                   return;
                 }
                 let branch: Step[] | null = null;
                 let mode: string | null = null;
                 if (sessionId) {
-                  const out = await rerunTrajectory(sessionId, { fromStep: current.idx, correction: text, mode: "agent" });
+                  const out = await rerunTrajectory(sessionId, { fromStep, correction: text, mode: "agent" });
                   if (out) { branch = out.steps; mode = out.mode; }
                 }
-                dispatch({ t: "correctAndRerun", fromStep: current.idx, branch, mode });
+                dispatch({ t: "correctAndRerun", fromStep, branch, mode });
               }}
               onPlayToggle={() => dispatch({ t: "playToggle" })}
               onStepTo={(i) => dispatch({ t: "stepTo", i })}
