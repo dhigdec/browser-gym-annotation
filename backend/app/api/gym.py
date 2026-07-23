@@ -11,7 +11,7 @@ from uuid import UUID as _UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import agent, checkpoints, gym_client, gym_review, jobs, models, verify, workspace
+from app import agent, canonical, checkpoints, gym_client, gym_review, jobs, models, verify, workspace
 from app.config import settings
 from app.db import SessionLocal, get_db
 
@@ -104,7 +104,15 @@ def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review
     # verbatim instead of re-driving a fresh, stochastic agent. `review` already
     # carries backendState + gymResume (set by the caller) but NOT yet sessionId
     # (added after this returns) — a shallow copy keeps that out of the snapshot.
-    traj = models.Trajectory(session_id=s.id, agent=agent, seed=seed, score=float(vr.get("score", 0.0) or 0.0), success=bool(vr.get("success")), source="gym", raw=(dict(review) if persist_raw else None))
+    # Stamp a prompt-edit re-run so it can never be mistaken for the task's own
+    # recorded failure. Without a marker it is indistinguishable from an original
+    # in the candidate set, and canonical selection has no way to keep it out — an
+    # annotator trying a reworded prompt would silently replace the curated
+    # breaker for every other annotator.
+    payload = dict(review) if persist_raw else None
+    if payload is not None and brief:
+        payload["promptOverride"] = True
+    traj = models.Trajectory(session_id=s.id, agent=agent, seed=seed, score=float(vr.get("score", 0.0) or 0.0), success=bool(vr.get("success")), source="gym", raw=payload)
     db.add(traj)
     db.flush()
     raw_steps = t.get("steps") or []  # 1:1 with review["steps"] (to_review enumerates them)
@@ -310,23 +318,12 @@ def gym_persisted_review(task_id: str, db: Session = Depends(get_db)) -> dict:
     task = db.scalar(select(models.Task).where(models.Task.external_id == task_id))
     if task is None:
         raise HTTPException(status_code=404, detail="no persisted gym review for this task")
-    # The CANONICAL run: the OLDEST trajectory carrying a real replay payload — i.e.
-    # the first full run-review of this breaker. Opening a breaker must ALWAYS show
-    # its canonical breaking run, never something layered on top:
-    #   - drive-forward continuations persist with raw=None → skipped here (a step
-    #     correction forks on top, on the human session, and never replaces this);
-    #   - a prompt-edit re-run is a NEWER full run shown transiently in-session, but
-    #     must not become the breaker's canonical view on reopen.
-    # Filtering `t.raw` in Python skips SQL NULL, legacy JSON-`null`, and empty
-    # payloads across both Postgres and SQLite.
-    trajs = db.scalars(
-        select(models.Trajectory)
-        .join(models.ReviewSession, models.Trajectory.session_id == models.ReviewSession.id)
-        .where(models.ReviewSession.task_id == task.id, models.Trajectory.source == "gym")
-        .order_by(models.Trajectory.created_at.asc())
-        .limit(50)
-    ).all()
-    traj = next((t for t in trajs if t.raw), None)  # oldest real payload = the canonical breaking run
+    # Opening a breaker must ALWAYS show its canonical breaking run, never something
+    # layered on top: a drive-forward continuation persists with raw=None, and a
+    # prompt-edit re-run is a newer full run shown transiently in-session. Which run
+    # that is, is BOUND — see app/canonical.py; it is not re-derived here, which is
+    # how this copy of the rule drifted from the other three.
+    traj = canonical.for_task(db, task.id)
     if traj is None:
         raise HTTPException(status_code=404, detail="no persisted gym review for this task")
     review = dict(traj.raw)

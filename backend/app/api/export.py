@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import models
+from app import canonical, models
 from app.auth import require_reviewer
 from app.db import get_db
 
@@ -43,20 +43,15 @@ def _base_trajectory(db: Session, s: models.ReviewSession) -> models.Trajectory 
     for the same task. Looking the trajectory up by the human session id alone
     therefore found nothing and shipped every gym sample with an empty
     recorded_trajectory (and a golden that was empty, or worse, only the correction
-    tail starting at a non-zero index). Resolve the canonical run exactly as
-    persisted-review does: the OLDEST gym trajectory carrying a replay payload for
-    this task.
+    tail starting at a non-zero index). Resolve the canonical run through the ONE
+    resolver, so a shipped sample names the same run the annotator reviewed — this
+    copy of the rule had already drifted (it carried no LIMIT where the other three
+    did, so on the same data it could answer differently).
     """
     own = _latest(db, models.Trajectory, s.id, models.Trajectory.created_at.desc())
     if own is not None:
         return own
-    rows = db.scalars(
-        select(models.Trajectory)
-        .join(models.ReviewSession, models.Trajectory.session_id == models.ReviewSession.id)
-        .where(models.ReviewSession.task_id == s.task_id, models.Trajectory.source == "gym")
-        .order_by(models.Trajectory.created_at.asc())
-    ).all()
-    return next((t for t in rows if t.raw), None)
+    return canonical.for_attempt(db, s)
 
 
 def _versioned_sample(

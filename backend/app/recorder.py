@@ -37,8 +37,17 @@ _REDACTED = "«redacted»"
 
 
 def _is_sensitive(target: dict | None) -> bool:
-    if not target:
-        return False
+    """Whether this element's typed value must never be persisted.
+
+    An EMPTY target counts as sensitive. A keystroke whose field we cannot name
+    is a keystroke we cannot clear, and the asymmetry is stark: a wrong redaction
+    costs one recoverable search query, while a missed one writes a password into
+    an append-only log forever. The client is expected to name the focused
+    element (the live browser exposes /focused for exactly this), so an unnamed
+    one means something went wrong — which is precisely when guessing is worst.
+    """
+    if target is None or not target:
+        return True
     hay = " ".join(
         str(target.get(k, "")) for k in ("name", "id", "testId", "role", "label", "placeholder", "type", "autocomplete")
     )

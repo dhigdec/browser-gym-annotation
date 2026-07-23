@@ -16,7 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import (
-    agent_runs, checkpoints, finalize, gym_client, jobs, models, recorder, replay, versions, workspace,
+    agent_runs, canonical, checkpoints, finalize, gym_client, jobs, models, recorder, replay, versions,
+    workspace,
 )
 from app.api.sessions import _owned_session
 from app.auth import current_annotator
@@ -212,7 +213,7 @@ def ensure_baseline(
         .order_by(models.Trajectory.created_at.asc())
     )
     if base is None:
-        base = _canonical_gym_trajectory(db, s)
+        base = canonical.for_attempt(db, s)
     if base is None:
         raise HTTPException(status_code=409, detail="this attempt has no recorded run to baseline from")
     v1 = versions.ensure_root(db, s, base)
@@ -557,18 +558,3 @@ def _attempt_trajectory(db: Session, s: models.ReviewSession) -> models.Trajecto
         db.add(t)
         db.flush()
     return t
-
-
-def _canonical_gym_trajectory(db: Session, s: models.ReviewSession) -> models.Trajectory | None:
-    """The bound canonical run for a gym task: the oldest gym trajectory that
-    carries a real replay payload. Binding it explicitly on v1
-    (`base_trajectory_id`) is what stops a later re-capture from quietly becoming
-    canonical (§3.10)."""
-    rows = db.scalars(
-        select(models.Trajectory)
-        .join(models.ReviewSession, models.Trajectory.session_id == models.ReviewSession.id)
-        .where(models.ReviewSession.task_id == s.task_id, models.Trajectory.source == "gym")
-        .order_by(models.Trajectory.created_at.asc())
-        .limit(50)
-    ).all()
-    return next((t for t in rows if t.raw), None)

@@ -155,3 +155,36 @@ def test_semantic_locator_prefers_durable_identifiers():
 def test_semantic_locator_degrades_gracefully():
     assert recorder.semantic_locator({}) == {}
     assert recorder.semantic_locator({"role": "button", "name": "Save"}) == {"role": "button", "name": "Save"}
+
+
+# --------------------------------------------------------------------------- fail closed
+def test_a_keystroke_with_no_named_target_is_redacted(db_session, attempt):
+    """The asymmetry decides this. A wrong redaction costs one recoverable search
+    query; a missed one writes a password into an append-only log forever. The
+    client is expected to name the focused element, so an unnamed one means
+    something already went wrong — exactly when guessing is worst."""
+    for target in ({}, None):
+        ev = recorder.record_event(
+            db_session, attempt_id=attempt.id, kind="key",
+            payload={"text": "hunter2"}, target=target,
+        )
+        assert ev.payload["redacted"] is True
+        assert "hunter2" not in str(ev.payload)
+    db_session.commit()
+
+
+def test_a_named_ordinary_field_is_still_not_redacted(db_session, attempt):
+    """Failing closed must not swallow every legitimate keystroke."""
+    ev = recorder.record_event(
+        db_session, attempt_id=attempt.id, kind="key",
+        payload={"text": "blue mug"}, target={"testId": "input-search", "type": "text"},
+    )
+    db_session.commit()
+    assert ev.payload["text"] == "blue mug" and not ev.payload.get("redacted")
+
+
+def test_non_typing_events_are_untouched_by_the_empty_target_rule(db_session, attempt):
+    """A click carries no secret; redacting it would destroy the locator trail."""
+    ev = recorder.record_event(db_session, attempt_id=attempt.id, kind="click", payload={"nx": 0.5}, target={})
+    db_session.commit()
+    assert not ev.payload.get("redacted") and ev.payload["nx"] == 0.5
