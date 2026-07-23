@@ -72,6 +72,19 @@ def hash_dom(dom: str | None) -> str:
     return hashlib.sha256(dom.encode()).hexdigest()
 
 
+def _clock_of(world: dict | None, given: int) -> int:
+    """The deterministic clock at this checkpoint.
+
+    The world's own `step` wins whenever it has one: `restore()` passes this value
+    to load_state, which sets the restored world's step from it, so any other
+    number guarantees the restored world will not match the recorded hash.
+    `given` is only a fallback for a world that carries no clock at all.
+    """
+    if isinstance(world, dict) and isinstance(world.get("step"), int):
+        return int(world["step"])
+    return given
+
+
 def add_artifact(db: Session, *, kind: str, uri: str, data: bytes | None = None, meta: dict | None = None) -> models.Artifact:
     """Register a blob (screenshot / DOM / AX / SoM / video). The row holds a URI +
     digest so storage can move to object storage without touching referrers."""
@@ -108,11 +121,18 @@ def capture(
     agent-only run (no live browser attached) still checkpoints its world.
     """
     b = browser or {}
+    # The world's own `step` IS the deterministic clock, so the two must agree by
+    # construction. They did not: callers passed a loop index (i + 1) while the
+    # world carried i, and `restore()` hands step_clock to /_harness/load_state,
+    # which OVERWRITES the restored world's step with it — so the restored world
+    # differed from the recorded one by exactly one tick and every single
+    # checkpoint raised DivergenceError. The chain looked perfect and nothing
+    # could be restored from it. Deriving it here makes that unrepresentable.
     cp = models.EnvironmentCheckpoint(
         attempt_id=attempt_id,
         world=world or {},
         backend_state=backend_state or {},
-        step_clock=step_clock,
+        step_clock=_clock_of(world, step_clock),
         url=b.get("url", "") or "",
         active_tab=str(b.get("activeTab", "") or ""),
         tabs=b.get("tabs") or [],

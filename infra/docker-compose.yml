@@ -31,6 +31,14 @@ services:
       AGENT_MODEL: ${AGENT_MODEL:-claude-haiku-4-5-20251001}
       # Live gym (M6c). The gym runs on the host; reach it via host.docker.internal.
       GYM_URL: ${GYM_URL:-http://host.docker.internal:8000}
+      # The live browser runs on the HOST (it owns a Chromium), so the composed
+      # backend reaches it the same way it reaches the gym. Without this the
+      # default localhost:8877 resolves inside the container, where nothing is
+      # listening, and every attempt to open a live browser 409s.
+      LIVE_BROWSER_URL: ${LIVE_BROWSER_URL:-http://host.docker.internal:8877}
+      # …and the browser is on the host, so it must be told the gym's HOST-side
+      # name. host.docker.internal is meaningful only inside this container.
+      GYM_HOST_FOR_BROWSER: ${GYM_HOST_FOR_BROWSER:-localhost}
       GYM_HARNESS_TOKEN: ${GYM_HARNESS_TOKEN:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"

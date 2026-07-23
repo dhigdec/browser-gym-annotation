@@ -199,3 +199,42 @@ def test_volatile_keys_are_stripped_at_every_level_not_just_the_top():
     quiet = {"shop": {"cart": {"items": []}}}
     noisy = {"shop": {"cart": {"items": []}, "action_log": [{"kind": "view"}, {"kind": "view"}]}}
     assert checkpoints.hash_world(quiet) == checkpoints.hash_world(noisy)
+
+
+# --------------------------------------------------------------------------- the clock
+def test_the_step_clock_is_taken_from_the_world_not_the_caller():
+    """THE bug that made every checkpoint unrestorable. Callers passed a loop
+    index (i + 1) while the world carried i. restore() hands step_clock to
+    load_state, which OVERWRITES the restored world's step with it, so the
+    restored world differed from the recorded one by one tick and raised
+    DivergenceError every time — while the persisted chain looked perfect."""
+    cp_world = {"task_id": "M40/x", "step": 2, "shop": {"cart": {"items": []}}}
+    assert checkpoints._clock_of(cp_world, 3) == 2, "the world's own clock wins"
+    assert checkpoints._clock_of({"step": 0}, 7) == 0
+    assert checkpoints._clock_of({"no": "clock"}, 5) == 5, "fallback for a world with no step"
+    assert checkpoints._clock_of(None, 4) == 4
+
+
+def test_a_captured_checkpoint_restores_against_its_own_world(db_session, attempt):
+    """The end-to-end shape: capture, then restore into a gym that honours the
+    step override exactly as /_harness/load_state does. This is what fork-before
+    depends on, and it never worked."""
+    world = {"task_id": "M40/x", "step": 2, "shop": {"cart": {"items": []}}}
+    cp = checkpoints.capture(db_session, attempt_id=attempt.id, world=world, step_clock=3)
+    db_session.commit()
+    assert cp.step_clock == 2, "the caller's off-by-one must not survive"
+
+    class HonestGym:
+        """load_state overwrites the world's step with the one it is given."""
+
+        def __init__(self):
+            self.loaded = None
+
+        def load_state(self, task_id, seed, state, step=None):
+            self.loaded = {**state, **({"step": step} if step is not None else {})}
+            return {"ok": True}
+
+        def world(self):
+            return self.loaded
+
+    assert checkpoints.restore(cp, HonestGym(), task_id="M40/x", seed=0) is True

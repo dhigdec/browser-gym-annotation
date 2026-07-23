@@ -24,6 +24,7 @@ import {
   fetchSessionHistory,
 } from "../../lib/api";
 import { parseStateEdits } from "../../lib/gymEdits";
+import { continuingAfter, rejecting } from "../../lib/versionsApi";
 import type { AutogenResult, HistoryRound, QaSubmission, QaTaskRow } from "../../lib/api";
 import type { ReviewData, Step, TaskListItem, Verifier } from "../../lib/types";
 import {
@@ -42,6 +43,10 @@ import {
 import { useAuth } from "../auth/AuthContext";
 import { ProfilePanel } from "../auth/ProfilePanel";
 import type { Annotator } from "../auth/authApi";
+import { LiveBrowserPane } from "../live-gym/LiveBrowserPane";
+import { attachLiveBrowser, closeLiveBrowser, currentLiveBrowser, type LiveSession } from "../live-gym/liveSessionApi";
+import { useVersionGraph, VersionGraph } from "../versions/VersionGraph";
+import { useVersionSteps, VersionSteps } from "../versions/VersionSteps";
 import { Header } from "./components/Header";
 import { ReplayPane } from "./components/ReplayPane";
 import { ActionTrace } from "./components/ActionTrace";
@@ -69,6 +74,123 @@ function SectionHeader({ n, title, subtitle, done, right }: { n: number; title: 
       <span style={{ fontSize: "0.875rem", fontWeight: weight.bold, color: active ? t.n0 : t.n2 }}>{title}</span>
       <span style={{ fontSize: "0.78rem", color: t.n3 }}>{subtitle}</span>
       {right && <span style={{ marginLeft: "auto" }}>{right}</span>}
+    </div>
+  );
+}
+
+export type PaneView = "replay" | "live";
+
+function PaneToggle({ view, opening, onReplay, onLive }: { view: PaneView; opening: boolean; onReplay: () => void; onLive: () => void }) {
+  const seg = (active: boolean) => ({
+    padding: "4px 11px", borderRadius: t.radiusMd, fontSize: "0.75rem", fontWeight: weight.semibold,
+    cursor: active ? "default" : "pointer", whiteSpace: "nowrap" as const,
+    background: active ? t.primary6 : "transparent", color: active ? t.n9 : t.n2,
+  });
+  return (
+    <span style={{ display: "inline-flex", gap: 2, padding: 2, borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, background: t.n9 }}>
+      <span onClick={view === "replay" ? undefined : onReplay} title="The recorded run — screenshots of the attempt the agent already finished" style={seg(view === "replay")}>
+        Replay
+      </span>
+      <span onClick={view === "live" || opening ? undefined : onLive} title="Open a browser in the gym and drive the same page the agent uses" style={seg(view === "live")}>
+        {opening ? "Opening…" : "Live browser"}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * The review surface: the recorded run, or the live browser.
+ *
+ * Both panes are the same flex box. Section 1's height is arithmetic (see the
+ * note where it is laid out), so a surface that measured differently per view
+ * would slide the tab strip up under the sticky header on every toggle.
+ */
+export function ReviewSurface({ view, session, attemptId, owner, replay }: {
+  view: PaneView;
+  session: LiveSession | null;
+  /** The review session — where the pane's recorded interactions land. */
+  attemptId: string | null;
+  /** The signed-in annotator. It MUST be the ticket's owner, or the live
+   *  service closes the stream 4401 and the pane shows a dead surface. */
+  owner?: string;
+  replay: ReactNode;
+}) {
+  if (view !== "live") return <>{replay}</>;
+  return <LiveBrowserPane attemptId={attemptId} session={session} owner={owner} />;
+}
+
+/**
+ * The attempt's version lineage, under the run it annotates.
+ *
+ * The graph re-reads itself after every fork and every compare-and-swap; both
+ * hooks live here rather than in ReviewScreen so that traffic cannot re-render
+ * the replay pane, whose surface is measured on each render.
+ */
+export function LineagePanel({ sessionId, isGym }: { sessionId: string | null; isGym: boolean }) {
+  const versions = useVersionGraph(sessionId);
+  const steps = useVersionSteps(sessionId, versions.viewingId);
+  const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
+  const viewing = versions.viewingId;
+
+  // v1 is the canonical run this attempt annotates: with no v1 there is no
+  // lineage to read and nothing to fork from. `ensureBaseline` is idempotent, so
+  // opening a gym session asks for it rather than guessing whether one exists.
+  const baselinedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!sessionId || !isGym || baselinedRef.current === sessionId) return;
+    baselinedRef.current = sessionId;
+    void versions.baseline();
+  }, [sessionId, isGym, versions.baseline]);
+
+  const viewed = versions.graph?.versions.find((v) => v.id === viewing) ?? null;
+  const versionNos = Object.fromEntries((versions.graph?.versions ?? []).map((v) => [v.id, v.versionNo]));
+
+  return (
+    <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+      <div style={{ width: 340, flexShrink: 0 }}>
+        <VersionGraph
+          graph={versions.graph}
+          viewingId={viewing}
+          notice={versions.notice}
+          busyVersionId={versions.busyVersionId}
+          onView={versions.view}
+          onSelectHead={versions.selectHead}
+          onSetStatus={versions.setStatus}
+          onDismissNotice={versions.dismissNotice}
+          onCreateBaseline={sessionId ? () => void versions.baseline() : undefined}
+        />
+      </div>
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+        {steps.error && (
+          <span style={{ fontSize: "0.72rem", color: t.redDark, fontWeight: weight.semibold }}>{steps.error}</span>
+        )}
+        <VersionSteps
+          version={viewed}
+          steps={steps.steps}
+          loading={steps.loading}
+          versionNos={versionNos}
+          selectedStepId={selectedStepId}
+          busyStepId={steps.busyStepId}
+          onSelectStep={(id) => setSelectedStepId((cur) => (cur === id ? null : id))}
+          onVerdict={steps.verdict}
+          // Two named commands, never one mode argument: fork-before REJECTS the
+          // step (it is absent from the child), fork-after KEEPS it. Transposing
+          // them still yields a plausible-looking golden trajectory.
+          onRejectStep={(s) => (viewing ? versions.fork(rejecting(viewing, s.stepId)) : undefined)}
+          onContinueAfter={(s) => (viewing ? versions.fork(continuingAfter(viewing, s.stepId)) : undefined)}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** A dismissable failure line. Stacked rather than overlaid: a live-browser
+ *  failure and a drive-forward failure are different facts and can coincide. */
+function Toast({ message, onDismiss, bottom = 24 }: { message: string; onDismiss: () => void; bottom?: number }) {
+  return (
+    <div onClick={onDismiss} title="Dismiss"
+      style={{ position: "fixed", left: "50%", bottom, transform: "translateX(-50%)", background: t.redLite, color: t.redDark, border: `1px solid color-mix(in srgb, ${t.red} 42%, ${t.n9})`, padding: "10px 16px", borderRadius: t.radiusLg, fontSize: "0.84rem", fontWeight: weight.semibold, zIndex: 70, cursor: "pointer", maxWidth: 540, boxShadow: t.shadowLg }}>
+      {message}
     </div>
   );
 }
@@ -118,7 +240,7 @@ interface TaskNav {
   onPromptRerun?: (prompt: string) => Promise<void>;
 }
 
-function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData; nav: TaskNav; startFresh: boolean; onStartNew: () => void }) {
+export function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData; nav: TaskNav; startFresh: boolean; onStartNew: () => void }) {
   const [state, dispatch] = useReducer(reducer, data, makeInitialState);
   const [correcting, setCorrecting] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -134,6 +256,16 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
   // round N got to) instead of re-anchoring to the original run's end-state. That's
   // what lets an annotator iteratively steer the agent to the target.
   const [liveResume, setLiveResume] = useState(data.gymResume);
+  // The recorded run is what an annotator opens a breaker to see, so the live
+  // browser is entered deliberately and never on load.
+  const [pane, setPane] = useState<PaneView>("replay");
+  const [liveSession, setLiveSession] = useState<LiveSession | null>(null);
+  const [liveOpening, setLiveOpening] = useState(false);
+  const [liveNotice, setLiveNotice] = useState<string | null>(null);
+  // Whether a browser is open server-side for this attempt. A ref, not state:
+  // the unmount cleanup below reads it after the last render, and it is also set
+  // by the re-attach probe, which must not repaint the pane.
+  const liveOpenRef = useRef(false);
 
   useEffect(() => {
     if (!state.playing) return;
@@ -207,6 +339,73 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
       alive = false;
     };
   }, [data.task.id]);
+
+  // ---- the live browser -----------------------------------------------------
+  // A reload never runs the cleanup below, so the browser from the previous
+  // mount is still running. Find it, so leaving the task reclaims it and the
+  // next attach re-tickets THAT browser instead of starting a second one.
+  useEffect(() => {
+    if (!sessionId) return;
+    let alive = true;
+    void currentLiveBrowser(sessionId).then((res) => {
+      if (alive && res.ok && res.value) liveOpenRef.current = true;
+    });
+    return () => { alive = false; };
+  }, [sessionId]);
+
+  // A live browser is a real Chromium on the host. Leaving the task without
+  // closing it leaks one per task the annotator opened, until the box is out of
+  // memory — which is why this runs whether or not the pane is on screen.
+  useEffect(() => {
+    if (!sessionId) return;
+    return () => {
+      if (!liveOpenRef.current) return;
+      liveOpenRef.current = false;
+      void closeLiveBrowser(sessionId);
+    };
+  }, [sessionId]);
+
+  const showLive = async () => {
+    if (!sessionId) {
+      setLiveNotice("The live browser needs a saved session — the backend is offline.");
+      return;
+    }
+    setLiveOpening(true);
+    // Claim it BEFORE the request, not after. Opening launches a real Chromium
+    // and takes seconds; an annotator who hits Next while it still reads
+    // "Opening…" unmounts this component, and a flag set only on success leaves
+    // the cleanup with nothing to close while the server goes on to create a
+    // browser nobody holds. A close for a session that was never opened is
+    // idempotent and free; a leaked Chromium is neither.
+    liveOpenRef.current = true;
+    // Always mint here, even when the probe above found a session: tickets
+    // expire, and a socket opened with a stale one closes 4401 and streams
+    // nothing at all.
+    const res = await attachLiveBrowser(sessionId);
+    setLiveOpening(false);
+    if (!res.ok) {
+      // The request failed, but the server may still have got as far as starting
+      // a browser — a timeout looks exactly like this from here — so reclaim it
+      // rather than assume nothing happened.
+      liveOpenRef.current = false;
+      void closeLiveBrowser(sessionId);
+      // Stay on the replay. A live pane with no stream is a surface that
+      // swallows every click and reports nothing.
+      setLiveNotice(res.message);
+      return;
+    }
+    setLiveSession(res.value);
+    setLiveNotice(null);
+    setPane("live");
+  };
+
+  const showReplay = () => {
+    setPane("replay");
+    if (!sessionId || !liveOpenRef.current) return;
+    liveOpenRef.current = false;
+    setLiveSession(null);
+    void closeLiveBrowser(sessionId);
+  };
 
   // Run the verifier suite through the backend execution engine (M5). Falls
   // back to a flag-derived result only when the backend is unreachable.
@@ -316,14 +515,12 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
     <Frame>
       <Header {...nav} />
       {driving && <GymLoading taskId={data.task.id} phase={driving} />}
-      {driveError && (
-        <div onClick={() => setDriveError(null)} title="Dismiss" style={{ position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", background: t.redLite, color: t.redDark, border: `1px solid color-mix(in srgb, ${t.red} 42%, ${t.n9})`, padding: "10px 16px", borderRadius: t.radiusLg, fontSize: "0.84rem", fontWeight: weight.semibold, zIndex: 70, cursor: "pointer", maxWidth: 540, boxShadow: t.shadowLg }}>
-          {driveError}
-        </div>
-      )}
+      {driveError && <Toast message={driveError} onDismiss={() => setDriveError(null)} />}
+      {liveNotice && <Toast message={liveNotice} onDismiss={() => setLiveNotice(null)} bottom={driveError ? 82 : 24} />}
       <div style={{ padding: "16px 16px 8px" }}>
         <SectionHeader n={1} title="Review & correct the agent run" subtitle="Verify each step; correct any step to re-run the agent from that state." right={
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <PaneToggle view={pane} opening={liveOpening} onReplay={showReplay} onLive={() => void showLive()} />
             <SaveBadge sessionId={sessionId} status={status} />
             {sessionId && state.rerunFrom != null && (
               <span onClick={() => setShowHistory(true)} title="Every correction round you made on this task"
@@ -378,98 +575,106 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
             modest so short viewports degrade gracefully instead of forcing overflow. */}
         <div style={{ display: "flex", gap: 16, height: "calc(100dvh - 134px)", minHeight: 440 }}>
           <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
-            <ReplayPane
-              tabs={data.tabs}
-              activeTabId={state.activeTabId}
-              onSelectTab={(id) => dispatch({ t: "selectTab", id })}
-              step={current}
-              stepNumber={current.idx}
-              stepIndex={state.step}
-              steps={steps}
-              playing={state.playing}
-              resolved={isResolved(state, current)}
-              verified={isVerified(state, current)}
-              correcting={correcting}
-              correctionSeed={current.type === "error" ? data.correctionSeed : current.description}
-              onVerify={() => dispatch({ t: "verifyStep" })}
-              onStartCorrect={() => setCorrecting(true)}
-              onCancelCorrect={() => setCorrecting(false)}
-              onSaveCorrect={async (text) => {
-                setCorrecting(false);
-                setDriveError(null);
-                const fromStep = current.idx;
-                // Gym tasks DRIVE A LIVE AGENT FORWARD from the corrected mid-episode
-                // state (gpt-5.1) and fork the trajectory with the real continuation
-                // — the genuine "re-run from this step" loop. The new steps are
-                // persisted on the session so the fork survives a reload, and the
-                // annotator re-does the pipeline (re-approve → verifiers → run).
-                if (data.source === "gym" && data.gymResume) {
-                  const edits = parseStateEdits(text); // `path = value` lines → real state edits
-                  // Continue from the LATEST world (previous correction's end-state),
-                  // and resume at THIS step's own page — so correcting a step inside a
-                  // re-run branch resumes there, not at the original run's final URL.
-                  const rz = liveResume ?? data.gymResume;
-                  // Resume from the world AT the corrected step, not the run's
-                  // FINAL world (which already contains later steps' effects).
-                  const stepWorld = rz.worldTrail?.[fromStep - 1] ?? undefined;
-                  const resumeUrl = current.url || rz.urlTrail[fromStep - 1] || rz.finalUrl || "/";
-                  setDriving("queued");
-                  // The free-text correction is the annotator's INSTRUCTION to the
-                  // agent (e.g. "verify the price before emailing"). It's injected
-                  // into the agent's context at the resume point so the re-run is
-                  // actually steered — separate from any `path = value` state edits.
-                  const res = await driveForwardGym(
-                    {
-                      taskId: data.task.id,
-                      seed: rz.seed,
-                      worldState: (stepWorld as Record<string, unknown> | undefined) ?? rz.worldState,
-                      edits: Object.keys(edits).length ? edits : undefined,
-                      correction: text.trim() || undefined, // reviewer guidance for the agent
-                      resumeUrl,
-                      resumeStep: fromStep,
-                      agent: "openai", // gpt-5.1 — genuinely continues from the corrected state
-                      sessionId: sessionId ?? undefined, // isolate the corrected verdict to THIS annotator
-                    },
-                    { onStatus: (s) => setDriving(s === "done" || s === "error" ? null : s) },
-                  );
-                  setDriving(null);
-                  if (res && res.steps.length) {
-                    // Adopt the world this re-run ended in, so the NEXT correction
-                    // continues from here — iterations compound toward the target.
-                    if (res.gymResume) setLiveResume(res.gymResume);
-                    // Fork at the correction point: re-index the continuation to fromStep+1…
-                    const branch = res.steps.map((s, i) => ({ ...s, idx: fromStep + i + 1 }));
-                    // Persist the branch relative to the CANONICAL prefix, so a reload
-                    // rebuilds the full multi-round trace. Correcting a step inside an
-                    // earlier branch would otherwise persist a fromStep past the
-                    // (shorter) canonical run and restore with a gap.
-                    const canonKeep = Math.min(fromStep, data.steps.length);
-                    const fullTail = [...steps.slice(canonKeep, fromStep), ...branch];
-                    if (sessionId) await rerunGymBranch(sessionId, { fromStep: canonKeep, steps: fullTail, mode: "agent", correction: text.trim() });
-                    dispatch({ t: "correctAndRerun", fromStep, branch, mode: "agent", gymReward: res.reward });
-                  } else if (res) {
-                    // The agent took NO new action but the gym still returned a real
-                    // verdict — answering / clarifying / refusing instead of clicking is
-                    // the CORRECT outcome for many tasks. Record the re-verified reward
-                    // instead of treating it as a failure.
-                    if (res.gymResume) setLiveResume(res.gymResume);
-                    dispatch({ t: "gymResumed", reward: res.reward });
-                    setDriveError(`The agent took no further action (it answered/declined rather than clicking) — re-verified reward ${res.reward}.`);
-                  } else {
-                    setDriveError("The live agent couldn't continue from that state — the gym may be unreachable or the model unavailable. Try again.");
-                  }
-                  return;
-                }
-                let branch: Step[] | null = null;
-                let mode: string | null = null;
-                if (sessionId) {
-                  const out = await rerunTrajectory(sessionId, { fromStep, correction: text, mode: "agent" });
-                  if (out) { branch = out.steps; mode = out.mode; }
-                }
-                dispatch({ t: "correctAndRerun", fromStep, branch, mode });
-              }}
-              onPlayToggle={() => dispatch({ t: "playToggle" })}
-              onStepTo={(i) => dispatch({ t: "stepTo", i })}
+            <ReviewSurface
+              view={pane}
+              session={liveSession}
+              attemptId={sessionId}
+              owner={nav.annotator?.email}
+              replay={
+                <ReplayPane
+                  tabs={data.tabs}
+                  activeTabId={state.activeTabId}
+                  onSelectTab={(id) => dispatch({ t: "selectTab", id })}
+                  step={current}
+                  stepNumber={current.idx}
+                  stepIndex={state.step}
+                  steps={steps}
+                  playing={state.playing}
+                  resolved={isResolved(state, current)}
+                  verified={isVerified(state, current)}
+                  correcting={correcting}
+                  correctionSeed={current.type === "error" ? data.correctionSeed : current.description}
+                  onVerify={() => dispatch({ t: "verifyStep" })}
+                  onStartCorrect={() => setCorrecting(true)}
+                  onCancelCorrect={() => setCorrecting(false)}
+                  onSaveCorrect={async (text) => {
+                    setCorrecting(false);
+                    setDriveError(null);
+                    const fromStep = current.idx;
+                    // Gym tasks DRIVE A LIVE AGENT FORWARD from the corrected mid-episode
+                    // state (gpt-5.1) and fork the trajectory with the real continuation
+                    // — the genuine "re-run from this step" loop. The new steps are
+                    // persisted on the session so the fork survives a reload, and the
+                    // annotator re-does the pipeline (re-approve → verifiers → run).
+                    if (data.source === "gym" && data.gymResume) {
+                      const edits = parseStateEdits(text); // `path = value` lines → real state edits
+                      // Continue from the LATEST world (previous correction's end-state),
+                      // and resume at THIS step's own page — so correcting a step inside a
+                      // re-run branch resumes there, not at the original run's final URL.
+                      const rz = liveResume ?? data.gymResume;
+                      // Resume from the world AT the corrected step, not the run's
+                      // FINAL world (which already contains later steps' effects).
+                      const stepWorld = rz.worldTrail?.[fromStep - 1] ?? undefined;
+                      const resumeUrl = current.url || rz.urlTrail[fromStep - 1] || rz.finalUrl || "/";
+                      setDriving("queued");
+                      // The free-text correction is the annotator's INSTRUCTION to the
+                      // agent (e.g. "verify the price before emailing"). It's injected
+                      // into the agent's context at the resume point so the re-run is
+                      // actually steered — separate from any `path = value` state edits.
+                      const res = await driveForwardGym(
+                        {
+                          taskId: data.task.id,
+                          seed: rz.seed,
+                          worldState: (stepWorld as Record<string, unknown> | undefined) ?? rz.worldState,
+                          edits: Object.keys(edits).length ? edits : undefined,
+                          correction: text.trim() || undefined, // reviewer guidance for the agent
+                          resumeUrl,
+                          resumeStep: fromStep,
+                          agent: "openai", // gpt-5.1 — genuinely continues from the corrected state
+                          sessionId: sessionId ?? undefined, // isolate the corrected verdict to THIS annotator
+                        },
+                        { onStatus: (s) => setDriving(s === "done" || s === "error" ? null : s) },
+                      );
+                      setDriving(null);
+                      if (res && res.steps.length) {
+                        // Adopt the world this re-run ended in, so the NEXT correction
+                        // continues from here — iterations compound toward the target.
+                        if (res.gymResume) setLiveResume(res.gymResume);
+                        // Fork at the correction point: re-index the continuation to fromStep+1…
+                        const branch = res.steps.map((s, i) => ({ ...s, idx: fromStep + i + 1 }));
+                        // Persist the branch relative to the CANONICAL prefix, so a reload
+                        // rebuilds the full multi-round trace. Correcting a step inside an
+                        // earlier branch would otherwise persist a fromStep past the
+                        // (shorter) canonical run and restore with a gap.
+                        const canonKeep = Math.min(fromStep, data.steps.length);
+                        const fullTail = [...steps.slice(canonKeep, fromStep), ...branch];
+                        if (sessionId) await rerunGymBranch(sessionId, { fromStep: canonKeep, steps: fullTail, mode: "agent", correction: text.trim() });
+                        dispatch({ t: "correctAndRerun", fromStep, branch, mode: "agent", gymReward: res.reward });
+                      } else if (res) {
+                        // The agent took NO new action but the gym still returned a real
+                        // verdict — answering / clarifying / refusing instead of clicking is
+                        // the CORRECT outcome for many tasks. Record the re-verified reward
+                        // instead of treating it as a failure.
+                        if (res.gymResume) setLiveResume(res.gymResume);
+                        dispatch({ t: "gymResumed", reward: res.reward });
+                        setDriveError(`The agent took no further action (it answered/declined rather than clicking) — re-verified reward ${res.reward}.`);
+                      } else {
+                        setDriveError("The live agent couldn't continue from that state — the gym may be unreachable or the model unavailable. Try again.");
+                      }
+                      return;
+                    }
+                    let branch: Step[] | null = null;
+                    let mode: string | null = null;
+                    if (sessionId) {
+                      const out = await rerunTrajectory(sessionId, { fromStep, correction: text, mode: "agent" });
+                      if (out) { branch = out.steps; mode = out.mode; }
+                    }
+                    dispatch({ t: "correctAndRerun", fromStep, branch, mode });
+                  }}
+                  onPlayToggle={() => dispatch({ t: "playToggle" })}
+                  onStepTo={(i) => dispatch({ t: "stepTo", i })}
+                />
+              }
             />
           </main>
           <RightPanel
@@ -496,6 +701,13 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
             onStepTo={(i) => dispatch({ t: "stepTo", i })}
             onApproveRemaining={() => dispatch({ t: "approveRemaining" })}
           />
+        </div>
+        {/* The lineage of THIS run: v1, every correction hanging off it, and the
+            per-step verdicts. It sits with the trace it describes rather than
+            behind a modal — deciding which version is the attempt's answer is
+            part of reviewing the run, not a separate errand. */}
+        <div style={{ padding: "16px 16px 0" }}>
+          <LineagePanel sessionId={sessionId} isGym={data.source === "gym"} />
         </div>
       </div>
 

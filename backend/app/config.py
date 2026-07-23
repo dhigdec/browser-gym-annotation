@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     # process from the gym on purpose: the gym owns world state, this owns a
     # browser, and neither imports the other.
     live_browser_url: str = "http://localhost:8877"
+    # How the BROWSER reaches the gym, when that differs from how this process
+    # does. The backend is containerised and uses host.docker.internal; the live
+    # browser runs on the host, where that name does not resolve. Empty means the
+    # two share a namespace, which is right on a single-host dev box.
+    gym_host_for_browser: str = ""
     # Rerun cap. 0 = OFF, which is the only safe default until manual capture has
     # passed E2E — capping reruns before an annotator can finish a task by hand
     # would strand them with no way forward.

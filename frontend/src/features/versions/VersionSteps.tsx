@@ -49,7 +49,7 @@ function VerdictDot({ verdict }: { verdict: StepVerdict }) {
   );
 }
 
-function Action({ children, hint, tone, onClick, disabled }: { children: ReactNode; hint: string; tone: string; onClick: () => void; disabled?: boolean }) {
+function Action({ children, hint, tone, onClick, disabled }: { children: ReactNode; hint: string; tone: string; onClick: (e: React.MouseEvent) => void; disabled?: boolean }) {
   return (
     <div style={{ flex: 1, minWidth: 190, display: "flex", flexDirection: "column", gap: 4 }}>
       <span
@@ -123,7 +123,13 @@ export function VersionSteps({
   // work out which of two identical-looking candidates to keep.
   const [forking, setForking] = useState(false);
   const forkingRef = useRef(false);
-  const fork = (run: (step: VersionStep) => void | Promise<void>) => (step: VersionStep) => {
+  const fork = (run: (step: VersionStep) => void | Promise<void>) => (step: VersionStep, e?: React.MouseEvent) => {
+    // `detail` counts the clicks in the current sequence, so the second click of
+    // a double-click is exactly detail === 2. That is the precise signal: elapsed
+    // time cannot tell a double-click from a deliberate re-fork, and the promise
+    // latch below only guards callers that return one — a synchronous handler
+    // settles between the two clicks and forks twice (measured).
+    if (e && e.detail > 1) return;
     if (forkingRef.current) return;
     forkingRef.current = true;
     setForking(true);
@@ -132,8 +138,8 @@ export function VersionSteps({
       setForking(false);
     });
   };
-  const rejectStep = fork(onRejectStep);
-  const continueAfter = fork(onContinueAfter);
+  const rejectStep = (s: VersionStep, e: React.MouseEvent) => fork(onRejectStep)(s, e);
+  const continueAfter = (s: VersionStep, e: React.MouseEvent) => fork(onContinueAfter)(s, e);
 
   return (
     <div style={{ background: t.n9, border: `1px solid ${t.n7}`, borderRadius: t.radiusXl, boxShadow: t.shadowMd, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -240,10 +246,10 @@ export function VersionSteps({
                     {/* Two separate commands with two separate sentences. A single
                         button with a before/after toggle is how a rejected action
                         ends up kept in the golden trajectory. */}
-                    <Action tone={t.redDark} hint={FORK_COPY.before.hint} onClick={() => rejectStep(s)} disabled={busy || forking}>
+                    <Action tone={t.redDark} hint={FORK_COPY.before.hint} onClick={(e) => rejectStep(s, e)} disabled={busy || forking}>
                       <Icon name="branch" size={13} color={t.redDark} /> {FORK_COPY.before.action}
                     </Action>
-                    <Action tone={t.primary6} hint={FORK_COPY.after.hint} onClick={() => continueAfter(s)} disabled={busy || forking}>
+                    <Action tone={t.primary6} hint={FORK_COPY.after.hint} onClick={(e) => continueAfter(s, e)} disabled={busy || forking}>
                       <Icon name="chevronRight" size={13} color={t.primary6} /> {FORK_COPY.after.action}
                     </Action>
                   </div>

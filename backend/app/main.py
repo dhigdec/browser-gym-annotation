@@ -12,6 +12,7 @@ from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
 from app.api.export import router as export_router
 from app.api.gym import router as gym_router
+from app.api.live import router as live_router
 from app.api.qa import router as qa_router
 from app.api.sessions import router as sessions_router
 from app.api.disposition import router as disposition_router
@@ -111,6 +112,7 @@ app.include_router(auth_router)                              # public: login / r
 app.include_router(tasks_router, dependencies=_AUTHED)
 app.include_router(sessions_router, dependencies=_AUTHED)
 app.include_router(versions_router, dependencies=_AUTHED)
+app.include_router(live_router, dependencies=_AUTHED)
 app.include_router(disposition_router, dependencies=_AUTHED)
 app.include_router(gym_router, dependencies=_AUTHED)
 app.include_router(qa_router, dependencies=_AUTHED)
