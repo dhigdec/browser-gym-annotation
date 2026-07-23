@@ -271,6 +271,43 @@ def _gym_verdict_for(db: Session, s: ReviewSession) -> BenchmarkRun | None:
     return _canonical_gym_verdict(db, s.task_id)
 
 
+def _is_corrected(db: Session, s: ReviewSession) -> bool:
+    """Whether this session has a REAL persisted correction.
+
+    Scoring keys off this (`corrected` selects the corrected end-state), so it must
+    never come from the request body: a client could simply claim corrected=true and
+    have the baked corrected state score every check, manufacturing a reward-1
+    'golden' sample with no correction and no review. Derive it from the DB only.
+    """
+    return s.rerun_from is not None or _latest_branch(db, s.id) is not None
+
+
+def _reviewable_step_count(db: Session, s: ReviewSession) -> int:
+    """How many steps the annotator is expected to have walked: the canonical run,
+    or (once corrected) the prefix kept + the correction tail."""
+    branch = _latest_branch(db, s.id)
+    if branch is not None:
+        return branch.from_step + len((branch.steps or {}).get("steps", []))
+    from app.api.export import _base_trajectory  # local: avoid an import cycle
+
+    traj = _base_trajectory(db, s)
+    if traj is not None:
+        return len(traj.steps)
+    return len(_session_fixture(db, s).get("steps", []))
+
+
+def _assert_steps_reviewed(db: Session, s: ReviewSession) -> None:
+    """The suite and the benchmark are DOWNSTREAM of human review. Gate on the
+    persisted review progress rather than a client-set status, so the chain cannot
+    be skipped straight to a submitted sample."""
+    need = _reviewable_step_count(db, s)
+    if need and s.reviewed_through < need:
+        raise HTTPException(
+            status_code=409,
+            detail=f"review the run first — {s.reviewed_through}/{need} steps reviewed",
+        )
+
+
 def _run_benchmark(db: Session, s: ReviewSession, corrected: bool, overrides: set[str]) -> dict:
     """Evaluate the PERSISTED suite for real and record the run. Single source of
     truth for both /run and /benchmark — neither trusts a client reward."""
@@ -711,7 +748,9 @@ def run_verifiers(session_id: UUID, body: RunBody, current: Annotator = Depends(
     cannot inflate the reward."""
     s = _owned_session(db, session_id, current, lock=True)
     _assert_not_submitted(s)
-    out = _run_benchmark(db, s, body.corrected, set(body.overrides))
+    _assert_steps_reviewed(db, s)
+    # `corrected` is DERIVED, never taken from the body (see _is_corrected).
+    out = _run_benchmark(db, s, _is_corrected(db, s), set(body.overrides))
     db.commit()
     return out
 
@@ -722,7 +761,8 @@ def record_benchmark(session_id: UUID, body: BenchmarkBody, current: Annotator =
     from the persisted suite; the client-supplied `reward` is ignored."""
     s = _owned_session(db, session_id, current, lock=True)
     _assert_not_submitted(s)
-    _run_benchmark(db, s, body.corrected, set(body.overrides))
+    _assert_steps_reviewed(db, s)
+    _run_benchmark(db, s, _is_corrected(db, s), set(body.overrides))
     db.commit()
     return _snapshot(db, s)
 

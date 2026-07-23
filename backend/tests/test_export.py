@@ -8,6 +8,7 @@ def _golden(client, task="GYM-2041"):
     sid = client.post(f"/api/tasks/{task}/sessions", json={"annotatorEmail": "e@x.io", "fresh": True}).json()["sessionId"]
     # correct the broken step → persists the golden-tail branch
     client.post(f"/api/sessions/{sid}/rerun", json={"fromStep": 12, "correction": "pay with the personal card", "mode": "deterministic"})
+    client.patch(f"/api/sessions/{sid}", json={"reviewedThrough": 999})
     vs = client.get(f"/api/tasks/{task}/review").json()["verifiers"]
     client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
     client.post(f"/api/sessions/{sid}/run", json={"corrected": True, "verifiers": vs, "overrides": []})

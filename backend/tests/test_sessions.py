@@ -1,10 +1,16 @@
 """Session lifecycle over the real API (SQLite-backed TestClient)."""
 
 
-def _open(client, task="GYM-2041"):
+def _open(client, task="GYM-2041", reviewed=True):
     r = client.post(f"/api/tasks/{task}/sessions", json={})
     assert r.status_code == 200
-    return r.json()["sessionId"]
+    sid = r.json()["sessionId"]
+    if reviewed:
+        # Walk the run like an annotator: the server now gates the benchmark on
+        # persisted review progress, so scoring an unreviewed run is a 409.
+        n = len(client.get(f"/api/tasks/{task}/review").json()["steps"])
+        client.patch(f"/api/sessions/{sid}", json={"reviewedThrough": n})
+    return sid
 
 
 def _verifiers(client, task="GYM-2041"):
@@ -24,6 +30,8 @@ def test_open_unknown_task_404(client):
 def test_full_lifecycle_writes_a_submission(client, monkeypatch):
     monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
     sid = _open(client)
+    client.post(f"/api/sessions/{sid}/rerun", json={"fromStep": 12, "correction": "pay with the personal card", "mode": "deterministic"})
+    client.patch(f"/api/sessions/{sid}", json={"reviewedThrough": 999})
     client.patch(f"/api/sessions/{sid}", json={"status": "steps_approved"})
     vs = _verifiers(client)
     client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
@@ -61,6 +69,8 @@ def test_rerun_falls_back_to_deterministic_without_key(client, monkeypatch):
 def test_session_runs_against_its_own_task(client, monkeypatch):
     monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
     sid = _open(client, "GYM-2042")
+    client.post(f"/api/sessions/{sid}/rerun", json={"fromStep": 6, "correction": "pay with the personal card", "mode": "deterministic"})
+    client.patch(f"/api/sessions/{sid}", json={"reviewedThrough": 999})
     vs = _verifiers(client, "GYM-2042")
     client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
     run = client.post(f"/api/sessions/{sid}/run", json={"corrected": True, "verifiers": vs, "overrides": []})
@@ -86,6 +96,8 @@ def test_run_ignores_client_supplied_verifiers(client, monkeypatch):
 
 def test_run_requires_a_saved_suite(client):
     sid = _open(client)
+    client.post(f"/api/sessions/{sid}/rerun", json={"fromStep": 12, "correction": "pay with the personal card", "mode": "deterministic"})
+    client.patch(f"/api/sessions/{sid}", json={"reviewedThrough": 999})
     r = client.post(f"/api/sessions/{sid}/run", json={"corrected": True, "verifiers": [], "overrides": []})
     assert r.status_code == 409
 
@@ -127,6 +139,8 @@ def test_fresh_starts_a_new_session(client):
 def test_submit_locks_the_session(client, monkeypatch):
     monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
     sid = _open(client)
+    client.post(f"/api/sessions/{sid}/rerun", json={"fromStep": 12, "correction": "pay with the personal card", "mode": "deterministic"})
+    client.patch(f"/api/sessions/{sid}", json={"reviewedThrough": 999})
     vs = _verifiers(client)
     client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
     client.post(f"/api/sessions/{sid}/run", json={"corrected": True, "verifiers": vs, "overrides": []})
@@ -144,6 +158,8 @@ def test_patch_cannot_set_submitted_or_out_of_range(client):
 def test_submitted_session_is_immutable_via_patch_and_rerun(client, monkeypatch):
     monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
     sid = _open(client)
+    client.post(f"/api/sessions/{sid}/rerun", json={"fromStep": 12, "correction": "pay with the personal card", "mode": "deterministic"})
+    client.patch(f"/api/sessions/{sid}", json={"reviewedThrough": 999})
     vs = _verifiers(client)
     client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
     client.post(f"/api/sessions/{sid}/run", json={"corrected": True, "verifiers": vs, "overrides": []})
@@ -199,6 +215,11 @@ def _submitted_golden(client, monkeypatch, task="GYM-2041"):
     monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
     sid = _open(client, task)
     vs = _verifiers(client, task)
+    # `corrected` is DERIVED from a persisted correction now — a golden requires a
+    # real fork, not a client-asserted flag.
+    client.post(f"/api/sessions/{sid}/rerun", json={"fromStep": 12, "correction": "pay with the personal card", "mode": "deterministic"})
+    client.patch(f"/api/sessions/{sid}", json={"reviewedThrough": 999})
+    client.patch(f"/api/sessions/{sid}", json={"reviewedThrough": 999})
     client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
     client.post(f"/api/sessions/{sid}/run", json={"corrected": True, "verifiers": vs, "overrides": []})
     assert client.post(f"/api/sessions/{sid}/submit", json={"reward": 1, "override": False}).status_code == 200
@@ -363,3 +384,34 @@ def test_history_returns_every_round_in_order(client, client_for):
     # another annotator cannot read this session's history
     other = client_for("someone-else@deccan.ai")
     assert other.get(f"/api/sessions/{sid}/history").status_code == 404
+
+
+def test_client_cannot_fabricate_a_golden_by_claiming_corrected(client, monkeypatch):
+    """`corrected` selects the corrected end-state for scoring, so a client claiming
+    corrected=true WITHOUT a persisted correction could manufacture a reward-1
+    'golden' sample. It is now derived from the DB and the claim is ignored."""
+    monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
+    sid = _open(client)                       # reviewed, but NOT corrected
+    vs = _verifiers(client)
+    client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
+
+    run = client.post(f"/api/sessions/{sid}/run", json={"corrected": True, "verifiers": vs, "overrides": []})
+    assert run.json()["reward"] == 0, "claiming corrected must not score the corrected state"
+    # ...and without a reward-1 benchmark the sample cannot be submitted as golden
+    assert client.post(f"/api/sessions/{sid}/submit", json={"reward": 1, "override": False}).status_code == 409
+
+    # doing the REAL correction earns the golden
+    client.post(f"/api/sessions/{sid}/rerun", json={"fromStep": 12, "correction": "pay with the personal card", "mode": "deterministic"})
+    client.patch(f"/api/sessions/{sid}", json={"reviewedThrough": 999})
+    assert client.post(f"/api/sessions/{sid}/run", json={"corrected": False, "verifiers": vs, "overrides": []}).json()["reward"] == 1
+
+
+def test_benchmark_requires_the_run_to_have_been_reviewed(client, monkeypatch):
+    """The suite/benchmark are downstream of human review — gated on persisted
+    progress, not a client-set status."""
+    monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
+    sid = _open(client, reviewed=False)
+    vs = _verifiers(client)
+    client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
+    r = client.post(f"/api/sessions/{sid}/run", json={"corrected": False, "verifiers": vs, "overrides": []})
+    assert r.status_code == 409 and "reviewed" in r.json()["detail"]

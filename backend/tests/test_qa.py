@@ -7,6 +7,9 @@ so each annotator is a separate authenticated client via `client_for`."""
 def _submit(c, task, corrected):
     sid = c.post(f"/api/tasks/{task}/sessions", json={"fresh": True}).json()["sessionId"]
     vs = c.get(f"/api/tasks/{task}/review").json()["verifiers"]
+    if corrected:
+        c.post(f"/api/sessions/{sid}/rerun", json={"fromStep": 12, "correction": "fix", "mode": "deterministic"})
+    c.patch(f"/api/sessions/{sid}", json={"reviewedThrough": 999})
     c.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
     c.post(f"/api/sessions/{sid}/run", json={"corrected": corrected, "verifiers": vs, "overrides": []})
     c.post(f"/api/sessions/{sid}/submit", json={

@@ -262,6 +262,8 @@ def test_gym_benchmark_scores_from_verdict_and_is_submittable(client, db_session
                  for v in review["verifiers"]]
     assert client.put(f"/api/sessions/{sid}/suite", json={"verifiers": verifiers}).status_code == 200
 
+    client.patch(f"/api/sessions/{sid}", json={"reviewedThrough": 999})
+
     bench = client.post(f"/api/sessions/{sid}/run", json={"corrected": False, "verifiers": [], "overrides": []})
     assert bench.status_code == 200
     out = bench.json()
@@ -289,6 +291,7 @@ def test_gym_breaker_benchmark_scores_zero_not_from_empty_fixture(client, db_ses
                   "placeholder": False, "addedByHuman": False, "gymResult": v["gymResult"]}
                  for v in review["verifiers"]]
     client.put(f"/api/sessions/{sid}/suite", json={"verifiers": verifiers})
+    client.patch(f"/api/sessions/{sid}", json={"reviewedThrough": 999})
     out = client.post(f"/api/sessions/{sid}/run", json={"corrected": False, "verifiers": [], "overrides": []}).json()
     assert out["reward"] == 0 and out["results"] == {"m0": "pass", "m1": "fail"}
     # reward 0 without an override is rejected at submit
@@ -381,6 +384,7 @@ def test_gym_verdict_is_isolated_per_annotator(client_for, db_session):
 
     def bench(c, sid, corrected):
         c.put(f"/api/sessions/{sid}/suite", json={"verifiers": suite})
+        c.patch(f"/api/sessions/{sid}", json={"reviewedThrough": 999})  # scoring is gated on review
         return c.post(f"/api/sessions/{sid}/run", json={"corrected": corrected, "verifiers": [], "overrides": []}).json()["reward"]
 
     assert bench(cx, sx, True) == 1   # X scores from X's OWN correction
