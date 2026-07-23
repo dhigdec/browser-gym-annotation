@@ -11,7 +11,7 @@ from uuid import UUID as _UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import agent, gym_client, gym_review, jobs, models, verify, workspace
+from app import agent, checkpoints, gym_client, gym_review, jobs, models, verify, workspace
 from app.config import settings
 from app.db import SessionLocal, get_db
 
@@ -108,15 +108,44 @@ def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review
     db.add(traj)
     db.flush()
     raw_steps = t.get("steps") or []  # 1:1 with review["steps"] (to_review enumerates them)
+    # Step 0's "before" is the seed world — capture-seed persisted it, so a fork
+    # before the FIRST action still has a state to restore from.
+    prev_cp = None
+    seed_world = (task.seed_state or {}).get("world")
+    if seed_world:
+        prev_cp = checkpoints.capture(
+            db, attempt_id=s.id, world=seed_world, step_clock=0,
+            browser={"url": t.get("initial_url") or ""},
+        )
     for i, st in enumerate(review["steps"]):
         raw = raw_steps[i] if i < len(raw_steps) else {}
+        # The full multi-app world AFTER this action — this is what makes
+        # "fork before step N" restorable instead of merely describable.
+        after_cp = None
+        if raw.get("world_after"):
+            after_cp = checkpoints.capture(
+                db, attempt_id=s.id, world=raw["world_after"],
+                backend_state=raw.get("snapshot_after") or {}, step_clock=i + 1,
+                browser={
+                    "url": raw.get("url_after") or st.get("url") or "",
+                    "activeTab": raw.get("active_tab"),
+                    "tabs": [x.get("url", "") for x in (raw.get("tab_strip") or []) if isinstance(x, dict)],
+                    "devicePixelRatio": raw.get("device_pixel_ratio") or 1.0,
+                },
+            )
         db.add(models.TrajectoryStep(
             trajectory_id=traj.id, idx=st["idx"], action_type=st["type"],
             description=st["description"], tab_id=st.get("tabId", ""),
             screenshot_url=st.get("image") or "",
             url_after=st.get("url") or "",           # the step's landing URL — schema has the column
             reasoning=(raw.get("reasoning") or "").strip(),
+            actor="agent",
+            arguments=raw.get("action_args") or {},
+            world_after=raw.get("world_after") or None,
+            before_checkpoint_id=prev_cp.id if prev_cp is not None else None,
+            after_checkpoint_id=after_cp.id if after_cp is not None else None,
         ))
+        prev_cp = after_cp or prev_cp
 
     suite = models.VerifierSuite(session_id=s.id, version=1)
     db.add(suite)

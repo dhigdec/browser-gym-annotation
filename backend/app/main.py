@@ -15,6 +15,7 @@ from app.api.gym import router as gym_router
 from app.api.qa import router as qa_router
 from app.api.sessions import router as sessions_router
 from app.api.tasks import router as tasks_router
+from app.api.versions import router as versions_router
 from app.config import settings
 from app.db import Base, engine
 from app.gym_client import GymBadRequest, GymTaskNotFound
@@ -108,6 +109,7 @@ _AUTHED = [Depends(current_annotator)]
 app.include_router(auth_router)                              # public: login / register
 app.include_router(tasks_router, dependencies=_AUTHED)
 app.include_router(sessions_router, dependencies=_AUTHED)
+app.include_router(versions_router, dependencies=_AUTHED)
 app.include_router(gym_router, dependencies=_AUTHED)
 app.include_router(qa_router, dependencies=_AUTHED)
 app.include_router(export_router, dependencies=_AUTHED)

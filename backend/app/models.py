@@ -380,7 +380,14 @@ class TrajectoryVersion(Base):
     # v1 binds the EXACT canonical base run (never a "newest/oldest" heuristic).
     base_trajectory_id: Mapped[UUID | None] = _fk("trajectory.id", nullable=True, ondelete="SET NULL")
     # Fork BEFORE the rejected step — the rejected step must not appear in the child.
-    fork_before_step_id: Mapped[UUID | None] = _fk("trajectory_step.id", nullable=True, ondelete="SET NULL")
+    # use_alter breaks the trajectory_version <-> trajectory_step cycle (a step
+    # belongs to a version; a version forks before a step), so create/drop can be
+    # ordered at all.
+    fork_before_step_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("trajectory_step.id", ondelete="SET NULL", use_alter=True, name="fk_version_fork_before_step"),
+        nullable=True,
+        index=True,
+    )
     fork_checkpoint_id: Mapped[UUID | None] = _fk("environment_checkpoint.id", nullable=True, ondelete="SET NULL")
     environment_image_digest: Mapped[str] = mapped_column(String(96), default="")
     producer: Mapped[str] = mapped_column(String(64), default="")       # agent name / "human"
