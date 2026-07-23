@@ -281,3 +281,62 @@ def test_sessions_are_isolated_per_annotator(client_for, db_session):
     assert ca.get(f"/api/sessions/{sa}").status_code == 200  # alice still owns hers
 
     assert db_session.query(Annotator).filter(Annotator.email.in_(["alice@x.io", "bob@x.io"])).count() == 2
+
+
+def test_unlimited_corrections_build_a_versioned_branch_chain(client, db_session):
+    """The annotator can correct as many times as they like: each round persists its
+    OWN immutable branch, chained to the previous one (parent_id), with its own
+    correction text — so the full iteration history survives, and reopening restores
+    the LATEST round's trace."""
+    from uuid import UUID
+
+    from app.models import AuditLog, ReviewSession, TrajectoryBranch
+    from sqlalchemy import select
+
+    sid = client.post("/api/tasks/GYM-2041/sessions", json={}).json()["sessionId"]
+    sid_u = UUID(sid)
+
+    rounds = [
+        {"fromStep": 2, "steps": [{"idx": 3, "type": "click", "tabId": "shop", "description": "r1-a"},
+                                  {"idx": 4, "type": "click", "tabId": "shop", "description": "r1-b"}],
+         "correction": "round 1: check the price first"},
+        {"fromStep": 3, "steps": [{"idx": 4, "type": "click", "tabId": "shop", "description": "r2-a"},
+                                  {"idx": 5, "type": "submit", "tabId": "shop", "description": "r2-b"}],
+         "correction": "round 2: now open the order"},
+        {"fromStep": 4, "steps": [{"idx": 5, "type": "submit", "tabId": "shop", "description": "r3-a"}],
+         "correction": "round 3: decline the bogus refund"},
+    ]
+    for r in rounds:
+        assert client.post(f"/api/sessions/{sid}/rerun-gym", json={**r, "mode": "agent"}).status_code == 200
+
+    # every round persisted its own branch, newest last
+    branches = db_session.scalars(
+        select(TrajectoryBranch).where(TrajectoryBranch.session_id == sid_u)
+        .order_by(TrajectoryBranch.created_at)
+    ).all()
+    assert len(branches) == 3, "each correction must persist its own branch (full history kept)"
+
+    # chained: b1 is the root, each later round points at its predecessor
+    assert branches[0].parent_id is None
+    assert branches[1].parent_id == branches[0].id
+    assert branches[2].parent_id == branches[1].id
+
+    # each round kept its OWN instruction + fork point (nothing overwritten)
+    assert [b.from_step for b in branches] == [2, 3, 4]
+    assert [b.correction for b in branches] == [r["correction"] for r in rounds]
+    assert branches[0].steps["steps"][0]["description"] == "r1-a"  # round 1 still intact
+
+    # the session tracks the LATEST round, and re-locks for re-review
+    s = db_session.get(ReviewSession, sid_u)
+    assert s.rerun_from == 4 and s.status == "draft"
+
+    # reopening restores the latest round's trace (not an earlier one)
+    snap = client.get(f"/api/sessions/{sid}").json()
+    assert snap["rerunFrom"] == 4
+    assert [st["description"] for st in snap["branch"]["steps"]] == ["r3-a"]
+
+    # one audit breadcrumb per correction
+    audits = db_session.scalars(
+        select(AuditLog).where(AuditLog.session_id == sid_u, AuditLog.action == "agent.rerun_gym")
+    ).all()
+    assert len(audits) == 3

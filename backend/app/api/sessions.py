@@ -183,6 +183,23 @@ def _default_annotator(db: Session, email: str | None) -> Annotator:
     return ann
 
 
+def _latest_branch(db: Session, session_id: UUID) -> TrajectoryBranch | None:
+    """The newest correction round = the LEAF of the parent chain (the branch no
+    other branch points at). Ordering by created_at alone is non-deterministic when
+    two rounds land in the same clock tick — which can chain a round to the wrong
+    parent and restore the wrong round on reload. Walking the chain is exact."""
+    rows = db.scalars(
+        select(TrajectoryBranch).where(TrajectoryBranch.session_id == session_id)
+    ).all()
+    if not rows:
+        return None
+    parents = {r.parent_id for r in rows if r.parent_id is not None}
+    leaves = [r for r in rows if r.id not in parents]
+    # A well-formed chain has exactly one leaf; fall back to the newest row if a
+    # legacy/unchained row exists, with a stable tiebreak so it's deterministic.
+    return max(leaves or list(rows), key=lambda r: (r.created_at, str(r.id)))
+
+
 def _latest_suite(db: Session, session_id: UUID) -> VerifierSuite | None:
     return db.scalar(
         select(VerifierSuite)
@@ -365,11 +382,7 @@ def _snapshot(db: Session, s: ReviewSession) -> dict:
     # The latest correction branch — so the fork (steps, count, provenance) is
     # restored EXACTLY as the annotator left it, instead of the client falling
     # back to the fixture's authored tail.
-    branch = db.scalar(
-        select(TrajectoryBranch)
-        .where(TrajectoryBranch.session_id == s.id)
-        .order_by(TrajectoryBranch.created_at.desc())
-    )
+    branch = _latest_branch(db, s.id)
     branch_out = None
     if branch is not None:
         branch_out = {"fromStep": branch.from_step, "mode": branch.mode, "steps": (branch.steps or {}).get("steps", [])}
@@ -554,11 +567,7 @@ def rerun(session_id: UUID, body: RerunBody, current: Annotator = Depends(curren
     if not 0 <= body.fromStep <= nsteps:
         raise HTTPException(status_code=422, detail=f"fromStep {body.fromStep} out of range 0..{nsteps}")
     branch_steps, actual_mode = _branch_for(body.correction, body.mode, body.fromStep, fixture)
-    parent = db.scalar(
-        select(TrajectoryBranch)
-        .where(TrajectoryBranch.session_id == s.id)
-        .order_by(TrajectoryBranch.created_at.desc())
-    )
+    parent = _latest_branch(db, s.id)
     br = TrajectoryBranch(
         session_id=s.id,
         parent_id=parent.id if parent else None,
@@ -588,11 +597,7 @@ def rerun_gym(session_id: UUID, body: RerunGymBody, current: Annotator = Depends
         raise HTTPException(status_code=409, detail="session is submitted (immutable) — start a new session to re-annotate")
     if not 0 <= body.fromStep <= 10000:
         raise HTTPException(status_code=422, detail="fromStep out of range")
-    parent = db.scalar(
-        select(TrajectoryBranch)
-        .where(TrajectoryBranch.session_id == s.id)
-        .order_by(TrajectoryBranch.created_at.desc())
-    )
+    parent = _latest_branch(db, s.id)
     br = TrajectoryBranch(
         session_id=s.id,
         parent_id=parent.id if parent else None,
