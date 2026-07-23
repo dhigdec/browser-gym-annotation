@@ -47,32 +47,58 @@ Every one of the 315 tasks has `action_args`, and the gym is deterministic
 **replayed** to reconstruct the world trail it was never recorded with — no
 model calls, no cost.
 
-Probed end-to-end against a real archived M40 run and the live gym:
+Probed end-to-end against six real archived multi-app runs and the live gym:
 
-| | result |
-|---|---|
-| archived selectors resolved on the live page | **3 / 3** |
-| world reconstructed byte-identically | **step 0 only** |
+| task | actions executed | world reconstructed byte-identically |
+|---|---|---|
+| M40/bogus_pricematch | 3 / 3 | **3 / 3** |
+| M47/phantom_duplicate | 11 / 11 | **10 / 11** |
+| M70/mixed_basket_two_redirects | 10 / 14 | **13 / 14** |
+| M75/stale_gift_message | 4 / 8 | **7 / 8** |
+| M57/birthday_errand | 17 / 17 | 4 / 17 |
+| M37/false_overcharge | 12 / 13 | 0 / 13 |
+| **total** | **57 / 66** | **37 / 66** |
 
-The probe is what found the `int`/`float` hash bug (fixed in `ffbf710`): four of
-the five differing leaves were `0` vs `0.0`, and the fifth was a nested
-`action_log`. After that fix step 0 matches exactly.
+The replay protocol that works is: execute the action, then
+`POST /_harness/verify {url, step: i}` — which is what sets the step counter
+(`server/main.py`, `s.step = req.step`) — then read the world. Omitting the
+verify call was why an early probe reconstructed only the first step.
 
-## Known gap
+Two bugs were found this way, both fixed:
 
-Steps 1+ still differ, and only in clock bookkeeping — `step`, `shop.step`,
-`schedule.now`. The replayer does not advance the gym's deterministic clock, so
-scheduled events never fire and the counters drift.
+- **`int` vs `float` in the world hash** (`ffbf710`). Four of the five leaves
+  differing on M40 were `0` vs `0.0` — the same money, serialized differently
+  through a JSON column. This was fail-**closed**: a correct restore raised
+  `DivergenceError`.
+- **An incomplete action vocabulary** (`58bbe04`). `submit`, `open_tab`,
+  `switch_tab`, `close_tab`, `scroll` and `wait` were all missing, and `submit`
+  alone is 46 of the archive's 283 recorded actions. M57 went from 4/17 actions
+  to 17/17.
 
-The fix is to reproduce the harness protocol exactly: `harness/runner.py:951`
-ticks with `step = len(trajectory.steps)` at the **start** of each turn, before
-the action. Adding a tick moved the counters but did not yet align them, so the
-protocol needs to be derived by instrumenting a live harness run rather than
-inferred from three archived data points.
+## Known gaps
+
+Two residual causes, each well characterised:
+
+1. **A single early failure cascades.** M37 scores 0/13 because its *first*
+   click does not resolve; every downstream state is then legitimately wrong.
+   Task-level, not systemic — fixing one locator would likely recover all 13.
+2. **Scheduled-event tasks need the clock advanced.** M57 executes all 17
+   actions yet diverges, which is the signature of a task whose async events
+   fire on the deterministic clock. `harness/runner.py:951` ticks with
+   `step = len(trajectory.steps)` at the *start* of each turn. Adding that tick
+   unconditionally made M40 *worse* (3/3 → 1/3), so the rule is conditional on
+   the task having a schedule and needs deriving from an instrumented live run
+   rather than inferred from archived data.
 
 **Deliberately not done:** stripping the clock from the world hash. It would make
 the numbers match today and destroy the guard — *when* an async email arrives is
 precisely the difference these multi-app tasks exist to catch.
+
+**The backfill is self-validating.** Every archived step carries both
+`world_after` and a `snapshot_after` summary, so a reconstruction can be checked
+against what was actually recorded and *skipped* when it disagrees. The backfill
+therefore cannot introduce wrong data — at worst it covers fewer tasks than
+hoped, which the audit reports honestly.
 
 ## Consequence for planning
 
