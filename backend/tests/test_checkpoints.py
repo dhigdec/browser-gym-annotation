@@ -163,3 +163,39 @@ def test_restore_reports_failure_when_the_gym_cannot_load(db_session, attempt):
 
     cp = checkpoints.capture(db_session, attempt_id=attempt.id, world=WORLD)
     assert checkpoints.restore(cp, Broken(None), task_id="M40/x", seed=0) is False
+
+
+# --------------------------------------------------------------------------- serialization
+def test_a_json_round_trip_does_not_read_as_divergence():
+    """THE fail-closed bug this guards. A world stored in a JSON column comes back
+    with 0.0 where the live gym reports 0 — same money, different serialization.
+    Without normalizing, restore() re-reads a CORRECTLY restored world, sees a
+    different digest, and aborts a valid fork. Found by replaying a real archived
+    M40 run: 4 of its 5 differing leaves were exactly this, none a state change."""
+    import json
+
+    live = {"shop": {"orders": {"ORD-5290": {"tax": 0, "shipping": 0, "total": 249.99}}}}
+    stored = json.loads(json.dumps({"shop": {"orders": {"ORD-5290": {"tax": 0.0, "shipping": 0.0, "total": 249.99}}}}))
+    assert checkpoints.hash_world(live) == checkpoints.hash_world(stored)
+
+
+def test_a_real_amount_change_still_diverges():
+    """Normalizing types must not blunt the guard: only the TYPE is forgiven."""
+    a = {"shop": {"total": 10}}
+    assert checkpoints.hash_world(a) != checkpoints.hash_world({"shop": {"total": 10.5}})
+    assert checkpoints.hash_world(a) != checkpoints.hash_world({"shop": {"total": 11}})
+
+
+def test_booleans_are_not_flattened_into_numbers():
+    """bool subclasses int in Python, so a careless numeric rule would make
+    `finished: True` hash the same as `finished: 1`."""
+    assert checkpoints.hash_world({"finished": True}) != checkpoints.hash_world({"finished": 1})
+    assert checkpoints.hash_world({"finished": False}) != checkpoints.hash_world({"finished": 0})
+
+
+def test_volatile_keys_are_stripped_at_every_level_not_just_the_top():
+    """The multi-app world nests an action_log under each app. Stripping only the
+    top-level one left shop.action_log churning into every hash."""
+    quiet = {"shop": {"cart": {"items": []}}}
+    noisy = {"shop": {"cart": {"items": []}, "action_log": [{"kind": "view"}, {"kind": "view"}]}}
+    assert checkpoints.hash_world(quiet) == checkpoints.hash_world(noisy)

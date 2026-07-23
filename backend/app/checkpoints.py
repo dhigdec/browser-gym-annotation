@@ -30,15 +30,31 @@ from app import models
 
 # Keys that change on every read without representing task state. Hashing them
 # would make every comparison diverge and the guard would be useless.
-_VOLATILE_TOP = {"flash_messages", "action_log"}
+# Checked at EVERY level, not just the top: the multi-app world nests an
+# action_log under each app (shop.action_log), and those churn just as much.
+_VOLATILE = {"flash_messages", "action_log"}
 
 
-def _strip_volatile(world: Any) -> Any:
-    if isinstance(world, dict):
-        return {k: _strip_volatile(v) for k, v in sorted(world.items()) if k not in _VOLATILE_TOP}
-    if isinstance(world, list):
-        return [_strip_volatile(v) for v in world]
-    return world
+def _normalize(value: Any) -> Any:
+    """Strip volatile keys and canonicalize numbers.
+
+    The number rule is load-bearing, not cosmetic. A world stored in a JSON column
+    comes back with `0.0` where the live gym reports `0` — same money, different
+    serialization — so an integral float must hash identically to its int.
+    Without this, `restore()` re-reads a correctly restored world, sees a
+    different digest, and aborts a valid fork as divergence. Measured against a
+    real archived M40 run: 4 of the 5 differing leaves were exactly this, and none
+    of them were a real state change. Comparing VALUES still catches a real one —
+    a changed amount changes the number, not just its type.
+    """
+    if isinstance(value, dict):
+        return {k: _normalize(v) for k, v in sorted(value.items()) if k not in _VOLATILE}
+    if isinstance(value, list):
+        return [_normalize(v) for v in value]
+    # bool is a subclass of int; leave it alone or True would hash as 1.
+    if isinstance(value, float) and not isinstance(value, bool) and value.is_integer():
+        return int(value)
+    return value
 
 
 def hash_world(world: dict | None) -> str:
@@ -46,7 +62,7 @@ def hash_world(world: dict | None) -> str:
     missing capture is never mistaken for a matching one."""
     if not world:
         return ""
-    payload = json.dumps(_strip_volatile(world), sort_keys=True, separators=(",", ":"), default=str)
+    payload = json.dumps(_normalize(world), sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
