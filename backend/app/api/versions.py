@@ -15,7 +15,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import agent_runs, checkpoints, gym_client, jobs, models, recorder, replay, versions, workspace
+from app import (
+    agent_runs, checkpoints, finalize, gym_client, jobs, models, recorder, replay, versions, workspace,
+)
 from app.api.sessions import _owned_session
 from app.auth import current_annotator
 from app.config import settings
@@ -216,6 +218,80 @@ def ensure_baseline(
     v1 = versions.ensure_root(db, s, base)
     db.commit()
     return _describe(db, v1, s.active_version_id)
+
+
+# --------------------------------------------------------------------------- finalization
+class GymScorer:
+    """Scores the bound suite from the gym's REAL milestone verdict, read against
+    the world the replay ended in — not from a re-derived guess."""
+
+    def __init__(self, gym) -> None:
+        self.gym = gym
+
+    def score(self, suite: models.VerifierSuite, world: dict | None) -> tuple[int, dict]:
+        verdict = self.gym.verify(0) or {}
+        results = {m.get("id"): ("pass" if m.get("passed") else "fail")
+                   for m in (verdict.get("milestones") or []) if m.get("id")}
+        if not results:  # no milestone detail — fall back to the suite's own ids
+            passed = bool(verdict.get("success"))
+            results = {v.ext_id: ("pass" if passed else "fail") for v in suite.verifiers}
+        return (1 if verdict.get("success") else 0), results
+
+
+class FinalizeBody(BaseModel):
+    versionId: UUID
+    suiteId: UUID | None = None
+    kind: str = "golden"
+
+
+@router.post("/sessions/{session_id}/finalize")
+def finalize_attempt(
+    session_id: UUID, body: FinalizeBody,
+    current: models.Annotator = Depends(current_annotator), db: Session = Depends(get_db),
+) -> dict:
+    """Ship an approved version: clean replay, score against the bound suite,
+    freeze the deliverable. Refuses rather than shipping something unbound."""
+    s = _owned_session(db, session_id, current, lock=True)
+    v = _version(db, s, body.versionId)
+    suite = (
+        db.get(models.VerifierSuite, body.suiteId) if body.suiteId
+        else db.scalar(
+            select(models.VerifierSuite)
+            .where(models.VerifierSuite.session_id == s.id)
+            .order_by(models.VerifierSuite.version.desc())
+        )
+    )
+    if suite is None:
+        raise HTTPException(status_code=409, detail="this attempt has no verifier suite to score against")
+
+    task = db.get(models.Task, s.task_id)
+    endpoint = workspace.endpoint_for(db, s.id)
+    live = gym_client.LiveBrowserClient(
+        base_url=settings.live_browser_url, session_id=f"finalize-{s.id}", ticket="", gym=endpoint,
+    )
+    try:
+        out = finalize.finalize(
+            db, attempt=s, version=v, suite=suite, executor=live, gym=endpoint,
+            scorer=GymScorer(endpoint), annotator_id=current.id, kind=body.kind,
+            task_external_id=task.external_id if task else "",
+        )
+    except finalize.NotApproved as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except replay.ReplayRejected as exc:
+        raise HTTPException(status_code=422, detail={
+            "error": "the approved version does not replay cleanly", "at": exc.at, "reason": exc.reason,
+        }) from exc
+    except versions.ConcurrencyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    db.add(models.AuditLog(
+        session_id=s.id, actor=current.email, action="attempt.finalize", target=out["submissionId"],
+        meta={"versionId": out["versionId"], "reward": out["reward"], "steps": out["steps"]},
+    ))
+    s.status = "submitted"
+    db.commit()
+    return out
 
 
 # --------------------------------------------------------------------------- agent handoff

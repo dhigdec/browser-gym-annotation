@@ -139,7 +139,8 @@ def test_reaper_reclaims_only_expired_leases(db_session, attempt, iso):
     db_session.commit()
 
     assert manager.reap_expired(db_session) == 1
-    db_session.refresh(doomed); db_session.refresh(live)
+    db_session.refresh(doomed)
+    db_session.refresh(live)
     assert doomed.status == "terminated" and doomed.external_ref in iso.terminated
     assert live.status == "ready", "an active lease must survive the reaper"
 
@@ -153,7 +154,8 @@ def test_restart_reconciliation_drops_orphans_and_adopts_live(db_session, attemp
 
     adopted = manager.reconcile_on_startup(db_session)
     assert adopted == 1
-    db_session.refresh(alive); db_session.refresh(orphan)
+    db_session.refresh(alive)
+    db_session.refresh(orphan)
     assert alive.status == "ready"
     assert orphan.status == "terminated"
 

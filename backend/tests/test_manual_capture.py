@@ -78,11 +78,11 @@ def live(monkeypatch):
     """Bind the API's two browser-dependent seams to a fake."""
     holder = {}
 
-    def install(l):
-        holder["live"] = l
-        monkeypatch.setattr(vapi.workspace, "endpoint_for", lambda db, sid: FakeGym(l))
-        monkeypatch.setattr(vapi.gym_client, "LiveBrowserClient", lambda **kw: l)
-        return l
+    def install(browser):
+        holder["live"] = browser
+        monkeypatch.setattr(vapi.workspace, "endpoint_for", lambda db, sid: FakeGym(browser))
+        monkeypatch.setattr(vapi.gym_client, "LiveBrowserClient", lambda **kw: browser)
+        return browser
 
     return install
 
