@@ -340,3 +340,26 @@ def test_unlimited_corrections_build_a_versioned_branch_chain(client, db_session
         select(AuditLog).where(AuditLog.session_id == sid_u, AuditLog.action == "agent.rerun_gym")
     ).all()
     assert len(audits) == 3
+
+
+def test_history_returns_every_round_in_order(client, client_for):
+    """The history endpoint surfaces the FULL iteration chain (oldest → newest) —
+    each round with its own fork point, instruction and steps — and is private to
+    the owning annotator."""
+    sid = client.post("/api/tasks/GYM-2041/sessions", json={}).json()["sessionId"]
+    for i, frm in enumerate([2, 3, 4], start=1):
+        client.post(f"/api/sessions/{sid}/rerun-gym", json={
+            "fromStep": frm, "mode": "agent", "correction": f"round {i}",
+            "steps": [{"idx": frm + 1, "type": "click", "tabId": "shop", "description": f"r{i}-a"}],
+        })
+
+    rounds = client.get(f"/api/sessions/{sid}/history").json()["rounds"]
+    assert [r["round"] for r in rounds] == [1, 2, 3]
+    assert [r["fromStep"] for r in rounds] == [2, 3, 4]
+    assert [r["correction"] for r in rounds] == ["round 1", "round 2", "round 3"]
+    assert rounds[0]["steps"][0]["description"] == "r1-a"  # earliest round still viewable
+    assert all(r["stepCount"] == 1 and r["at"] for r in rounds)
+
+    # another annotator cannot read this session's history
+    other = client_for("someone-else@deccan.ai")
+    assert other.get(f"/api/sessions/{sid}/history").status_code == 404

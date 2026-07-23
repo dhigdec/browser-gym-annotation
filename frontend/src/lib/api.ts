@@ -429,3 +429,29 @@ export async function runGymReview(
   }
   return null; // client-side timeout guard
 }
+
+// ---- iteration history -----------------------------------------------------
+
+/** One correction round the annotator made (oldest → newest). */
+export interface HistoryRound {
+  round: number;
+  branchId: string;
+  fromStep: number;
+  mode: string;
+  correction: string;
+  steps: Step[];
+  stepCount: number;
+  at: string;
+}
+
+/** Every correction round on this session — how the annotator steered the agent.
+ *  The main view only restores the LATEST round; this is the full chain. */
+export async function fetchSessionHistory(sid: string): Promise<HistoryRound[]> {
+  try {
+    const res = await fetch(`/api/sessions/${sid}/history`, { credentials: "include" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return ((await res.json()) as { rounds?: HistoryRound[] }).rounds ?? [];
+  } catch {
+    return [];
+  }
+}

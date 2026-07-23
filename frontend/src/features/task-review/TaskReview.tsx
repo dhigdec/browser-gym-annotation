@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
-import { Button, Icon, t, weight } from "../../ds";
+import { ACTION_COLOR, Button, Icon, t, weight } from "../../ds";
 import {
   adjudicate,
   autogenVerifiers,
@@ -21,9 +21,10 @@ import {
   runVerifiers,
   saveSuite,
   submitSession,
+  fetchSessionHistory,
 } from "../../lib/api";
 import { parseStateEdits } from "../../lib/gymEdits";
-import type { AutogenResult, QaSubmission, QaTaskRow } from "../../lib/api";
+import type { AutogenResult, HistoryRound, QaSubmission, QaTaskRow } from "../../lib/api";
 import type { ReviewData, Step, TaskListItem, Verifier } from "../../lib/types";
 import {
   canSubmit,
@@ -127,6 +128,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
   const [autogen, setAutogen] = useState<null | "queued" | "running">(null);
   const [autogenResult, setAutogenResult] = useState<AutogenResult | null>(null);
   const [editingState, setEditingState] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   // The LIVE resume context. Each drive-forward returns the world it ended in, and
   // we adopt it — so successive corrections COMPOUND (round N+1 continues from where
   // round N got to) instead of re-anchoring to the original run's end-state. That's
@@ -323,6 +325,12 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
         <SectionHeader n={1} title="Review & correct the agent run" subtitle="Verify each step; correct any step to re-run the agent from that state." right={
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <SaveBadge sessionId={sessionId} status={status} />
+            {sessionId && state.rerunFrom != null && (
+              <span onClick={() => setShowHistory(true)} title="Every correction round you made on this task"
+                style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, background: t.n9, color: t.n1, fontSize: "0.75rem", fontWeight: weight.semibold, cursor: "pointer", whiteSpace: "nowrap" }}>
+                ⟲ Iterations
+              </span>
+            )}
             {data.source === "gym" && data.gymResume && (
               <span onClick={() => setEditingState(true)} title="Edit the world state and re-verify against the gym"
                 style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, background: t.n9, color: t.primary6, fontSize: "0.75rem", fontWeight: weight.semibold, cursor: "pointer", whiteSpace: "nowrap" }}>
@@ -510,6 +518,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
       </div>
 
       {autogenResult && <AutogenPanel result={autogenResult} onClose={() => setAutogenResult(null)} />}
+      {showHistory && sessionId && <IterationHistory sessionId={sessionId} onClose={() => setShowHistory(false)} />}
       {editingState && data.source === "gym" && data.gymResume && (
         <StateEditor
           world={(liveResume ?? data.gymResume).worldState ?? {}}
@@ -529,6 +538,77 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
         />
       )}
     </Frame>
+  );
+}
+
+/** The iteration history: every correction ROUND the annotator made on this
+ *  session, oldest → newest. The main view only restores the latest round, so this
+ *  is how you step back through how the agent was steered toward the target. */
+function IterationHistory({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalA11y(onClose, dialogRef);
+  const [rounds, setRounds] = useState<HistoryRound[] | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  useEffect(() => { void fetchSessionHistory(sessionId).then(setRounds); }, [sessionId]);
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(13,13,13,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 56 }}>
+      <div ref={dialogRef} {...DIALOG} aria-label="Iteration history" onClick={(e) => e.stopPropagation()}
+           style={{ width: 660, maxHeight: "82vh", background: t.n9, borderRadius: t.radius2xl, boxShadow: t.shadowXl, display: "flex", flexDirection: "column", overflow: "hidden", outline: "none" }}>
+        <div style={{ padding: "18px 22px 14px", borderBottom: `1px solid ${t.n7}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: "1rem", fontWeight: weight.bold, color: t.n0 }}>⟲ Iteration history</div>
+            <div style={{ marginTop: 3, fontSize: "0.8rem", color: t.n2 }}>
+              Every correction round on this task — each kept its own fork point, instruction and steps.
+            </div>
+          </div>
+          <span onClick={onClose} style={{ cursor: "pointer", color: t.n3, display: "inline-flex" }}><Icon name="close" size={18} /></span>
+        </div>
+        <div style={{ overflowY: "auto", padding: "6px 0" }}>
+          {rounds === null && <div style={{ padding: "22px", fontSize: "0.84rem", color: t.n3 }}>Loading…</div>}
+          {rounds?.length === 0 && (
+            <div style={{ padding: "22px", fontSize: "0.84rem", color: t.n3 }}>
+              No corrections yet — correct a step to start iterating.
+            </div>
+          )}
+          {rounds?.map((r) => {
+            const isOpen = open === r.branchId;
+            return (
+              <div key={r.branchId} style={{ borderBottom: `1px solid ${t.n8}` }}>
+                <div onClick={() => setOpen(isOpen ? null : r.branchId)}
+                     style={{ padding: "12px 22px", cursor: "pointer", display: "flex", alignItems: "flex-start", gap: 12 }}>
+                  <span style={{ flexShrink: 0, width: 26, height: 26, borderRadius: t.radiusFull, background: t.primary6, color: t.n9, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "0.72rem", fontWeight: weight.bold }}>{r.round}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: "0.84rem", fontWeight: weight.semibold, color: t.n0 }}>
+                      Corrected step {r.fromStep} → {r.stepCount} new step{r.stepCount === 1 ? "" : "s"}
+                    </div>
+                    {r.correction ? (
+                      <div style={{ marginTop: 3, fontSize: "0.79rem", color: t.n2, fontStyle: "italic" }}>“{r.correction}”</div>
+                    ) : (
+                      <div style={{ marginTop: 3, fontSize: "0.76rem", color: t.n3 }}>(no instruction recorded)</div>
+                    )}
+                    <div style={{ marginTop: 4, fontSize: "0.72rem", color: t.n3, fontFamily: t.fontMono }}>
+                      {r.mode} · {new Date(r.at).toLocaleString()}
+                    </div>
+                  </div>
+                  <span style={{ flexShrink: 0, color: t.n3, fontSize: "0.72rem" }}>{isOpen ? "▲" : "▼"}</span>
+                </div>
+                {isOpen && (
+                  <div style={{ padding: "2px 22px 14px 60px", display: "flex", flexDirection: "column", gap: 6 }}>
+                    {r.steps.map((st) => (
+                      <div key={st.idx} style={{ display: "flex", alignItems: "center", gap: 9, fontSize: "0.79rem", color: t.n1 }}>
+                        <span style={{ fontFamily: t.fontMono, color: t.n3, width: 22, flexShrink: 0 }}>{String(st.idx).padStart(2, "0")}</span>
+                        <span style={{ fontSize: "0.63rem", fontWeight: weight.bold, textTransform: "uppercase", letterSpacing: "0.04em", color: ACTION_COLOR[st.type], width: 62, flexShrink: 0 }}>{st.type}</span>
+                        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{st.description}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
   );
 }
 

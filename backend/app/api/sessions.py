@@ -520,6 +520,48 @@ def get_session(session_id: UUID, current: Annotator = Depends(current_annotator
     return _snapshot(db, _owned_session(db, session_id, current))
 
 
+@router.get("/sessions/{session_id}/history")
+def session_history(session_id: UUID, current: Annotator = Depends(current_annotator), db: Session = Depends(get_db)) -> dict:
+    """Every correction ROUND on this session, oldest → newest (root → leaf of the
+    branch chain). Each round kept its own fork point, instruction and resulting
+    steps, so the annotator can step back through exactly how they steered the
+    agent toward the target — the reload view only shows the latest round."""
+    s = _owned_session(db, session_id, current)
+    rows = list(db.scalars(select(TrajectoryBranch).where(TrajectoryBranch.session_id == s.id)).all())
+    children: dict = {}
+    for r in rows:
+        children.setdefault(r.parent_id, []).append(r)
+    for kids in children.values():
+        kids.sort(key=lambda r: (r.created_at, str(r.id)))
+    # Walk the chain from its root so rounds are in the order they were made.
+    ordered: list[TrajectoryBranch] = []
+    seen: set = set()
+    cur = (children.get(None) or [None])[0]
+    while cur is not None and cur.id not in seen:
+        ordered.append(cur)
+        seen.add(cur.id)
+        nxt = children.get(cur.id) or []
+        cur = nxt[0] if nxt else None
+    # Legacy/unchained rows still surface rather than vanishing from the history.
+    ordered += sorted((r for r in rows if r.id not in seen), key=lambda r: (r.created_at, str(r.id)))
+    return {
+        "sessionId": str(s.id),
+        "rounds": [
+            {
+                "round": i + 1,
+                "branchId": str(r.id),
+                "fromStep": r.from_step,
+                "mode": r.mode,
+                "correction": r.correction or "",
+                "steps": (r.steps or {}).get("steps", []),
+                "stepCount": len((r.steps or {}).get("steps", [])),
+                "at": r.created_at.isoformat(),
+            }
+            for i, r in enumerate(ordered)
+        ],
+    }
+
+
 @router.patch("/sessions/{session_id}")
 def patch_session(session_id: UUID, body: PatchSessionBody, current: Annotator = Depends(current_annotator), db: Session = Depends(get_db)) -> dict:
     s = _owned_session(db, session_id, current, lock=True)
