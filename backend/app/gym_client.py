@@ -29,8 +29,10 @@ class GymBadRequest(Exception):
         self.detail = detail
 
 
-def _req(method: str, path: str, body: dict | None = None, timeout: int = 20) -> dict | None:
-    url = settings.gym_url.rstrip("/") + path
+def _req(method: str, path: str, body: dict | None = None, timeout: int = 20, base_url: str | None = None) -> dict | None:
+    # base_url targets ONE workspace's gym (per-annotator isolation). Omitted =>
+    # the single shared settings.gym_url, which is the legacy/default behaviour.
+    url = (base_url or settings.gym_url).rstrip("/") + path
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
         url,
@@ -129,10 +131,11 @@ def resume_verify(task_id: str, seed: int, state: dict, url_trail: list[str], fi
     return final or last
 
 
-def screenshot(path: str) -> bytes | None:
-    """Fetch a per-step screenshot PNG (raw bytes) from the gym."""
+def _screenshot_bytes(path: str, base_url: str | None = None) -> bytes | None:
+    """Raw PNG fetch, shared by the module function and GymEndpoint (which binds a
+    per-workspace base_url)."""
     import urllib.parse
-    url = settings.gym_url.rstrip("/") + "/_harness/screenshot?path=" + urllib.parse.quote(path, safe="")
+    url = (base_url or settings.gym_url).rstrip("/") + "/_harness/screenshot?path=" + urllib.parse.quote(path, safe="")
     req = urllib.request.Request(url, headers={"X-Harness-Token": settings.gym_harness_token})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
@@ -141,5 +144,73 @@ def screenshot(path: str) -> bytes | None:
         return None
 
 
+def screenshot(path: str) -> bytes | None:
+    """Fetch a per-step screenshot PNG (raw bytes) from the gym."""
+    return _screenshot_bytes(path)
+
+
 def available() -> bool:
     return _req("GET", "/_harness/tasks") is not None
+
+
+class GymEndpoint:
+    """A gym bound to ONE workspace endpoint.
+
+    The module-level functions above target the single shared ``settings.gym_url``
+    (legacy/default). A per-session workspace uses an instance instead, so two
+    annotators never mutate the same world — the gym keeps one global ``SESSION``
+    per process, so isolation must come from talking to a *different process*.
+    """
+
+    __slots__ = ("base_url",)
+
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url
+
+    # --- read ---------------------------------------------------------------
+    def tasks(self) -> list[str] | None:
+        d = _req("GET", "/_harness/tasks", base_url=self.base_url)
+        return d.get("tasks") if d else None
+
+    def snapshot(self) -> dict | None:
+        return _req("GET", "/_harness/snapshot", base_url=self.base_url)
+
+    def world(self) -> dict | None:
+        return _req("GET", "/_harness/world", base_url=self.base_url)
+
+    def state(self) -> dict | None:
+        return _req("GET", "/_harness/state", base_url=self.base_url)
+
+    def available(self) -> bool:
+        return _req("GET", "/_harness/tasks", base_url=self.base_url) is not None
+
+    # --- mutate / drive -----------------------------------------------------
+    def reset(self, task_id: str, seed: int = 0) -> dict | None:
+        return _req("POST", "/_harness/reset", {"task_id": task_id, "seed": seed}, base_url=self.base_url)
+
+    def verify(self, step: int = 0) -> dict | None:
+        return _req("POST", "/_harness/verify", {"step": step}, base_url=self.base_url)
+
+    def load_state(self, task_id: str, seed: int, state: dict, step: int | None = None) -> dict | None:
+        body: dict = {"task_id": task_id, "seed": seed, "state": state}
+        if step is not None:
+            body["step"] = step
+        return _req("POST", "/_harness/load_state", body, base_url=self.base_url)
+
+    def run_agent(self, task_id: str, agent: str = "oracle", seed: int = 0, brief: str | None = None) -> dict | None:
+        body: dict = {"agent": agent, "task_id": task_id, "seed": seed}
+        if brief:
+            body["brief"] = brief
+        return _req("POST", "/_harness/run_agent", body, timeout=260, base_url=self.base_url)
+
+    def resume_run(self, task_id: str, seed: int, state: dict, url: str, step: int | None = None,
+                   agent: str = "llm", correction: str = "") -> dict | None:
+        body: dict = {"agent": agent, "task_id": task_id, "seed": seed, "state": state, "url": url or "/"}
+        if step is not None:
+            body["step"] = step
+        if correction:
+            body["correction"] = correction
+        return _req("POST", "/_harness/resume_run", body, timeout=300, base_url=self.base_url)
+
+    def screenshot(self, path: str) -> bytes | None:
+        return _screenshot_bytes(path, base_url=self.base_url)

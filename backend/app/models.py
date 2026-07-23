@@ -440,6 +440,11 @@ class WorkspaceLease(Base):
     id: Mapped[UUID] = _pk()
     attempt_id: Mapped[UUID] = _fk("review_session.id")
     annotator_id: Mapped[UUID | None] = _fk("annotator.id", nullable=True, ondelete="SET NULL")
+    # The two runtime types are never shared: a long-lived `human` workspace (what
+    # the live browser attaches to) vs a short-lived `agent_branch` worker cloned
+    # from a checkpoint for one batch run. An agent run must never execute against
+    # the human's workspace — the gym resets one global SESSION per process.
+    purpose: Mapped[str] = mapped_column(String(16), default="human", index=True)  # human | agent_branch
     runtime_kind: Mapped[str] = mapped_column(String(24), default="local_process")  # local_process | kubernetes
     endpoint: Mapped[str] = mapped_column(Text, default="")      # http://127.0.0.1:PORT
     external_ref: Mapped[str] = mapped_column(Text, default="")  # pid / pod name

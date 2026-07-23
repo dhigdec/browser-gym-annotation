@@ -26,6 +26,17 @@ class Settings(BaseSettings):
     gym_url: str = "http://localhost:8000"
     gym_harness_token: str = ""
 
+    # --- isolated workspaces (v2) -------------------------------------------
+    # The gym holds ONE global SESSION per process, so two annotators sharing a
+    # gym corrupt each other's world. When enabled, each attempt leases its OWN
+    # gym process and `gym_url` becomes a fallback only. Off until gym_repo_path
+    # is configured and verified, so the default stays the known-good behaviour.
+    workspace_isolation: bool = False
+    workspace_runtime: str = "local_process"   # local_process | kubernetes
+    workspace_idle_ttl_minutes: int = 75       # INACTIVITY-based; extended by human control or a running job
+    workspace_max_per_annotator: int = 2       # a human workspace + one agent branch worker
+    gym_image_digest: str = ""                 # environment version stamped onto checkpoints/versions
+
     env: str = "dev"
 
     # Dev bootstraps the schema with create_all; prod (GCP) sets this false and
