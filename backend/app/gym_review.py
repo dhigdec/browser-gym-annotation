@@ -162,6 +162,10 @@ def to_review(run: dict, task_id: str, agent: str) -> dict:
         "gymResume": {
             "seed": int(run.get("seed", 0)),
             "urlTrail": [s.get("url_after") or "" for s in steps_in],
+            # The FULL world AFTER each step. Correcting step N resumes from
+            # worldTrail[N-1]; resuming from `worldState` (the run's FINAL world)
+            # replays a state that already contains every later step's effects.
+            "worldTrail": [s.get("world_after") for s in steps_in],
             "finalUrl": t.get("final_url") or "",
         },
     }

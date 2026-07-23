@@ -409,6 +409,9 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
                   // and resume at THIS step's own page — so correcting a step inside a
                   // re-run branch resumes there, not at the original run's final URL.
                   const rz = liveResume ?? data.gymResume;
+                  // Resume from the world AT the corrected step, not the run's
+                  // FINAL world (which already contains later steps' effects).
+                  const stepWorld = rz.worldTrail?.[fromStep - 1] ?? undefined;
                   const resumeUrl = current.url || rz.urlTrail[fromStep - 1] || rz.finalUrl || "/";
                   setDriving("queued");
                   // The free-text correction is the annotator's INSTRUCTION to the
@@ -419,7 +422,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
                     {
                       taskId: data.task.id,
                       seed: rz.seed,
-                      worldState: rz.worldState,
+                      worldState: (stepWorld as Record<string, unknown> | undefined) ?? rz.worldState,
                       edits: Object.keys(edits).length ? edits : undefined,
                       correction: text.trim() || undefined, // reviewer guidance for the agent
                       resumeUrl,

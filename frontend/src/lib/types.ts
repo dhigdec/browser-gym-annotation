@@ -69,6 +69,10 @@ export interface GymResume {
   urlTrail: string[];
   finalUrl: string;
   worldState?: Record<string, unknown>;
+  /** The world AFTER each step. Correcting step N must resume from
+   *  worldTrail[N-1] — resuming from `worldState` (the run's FINAL world) replays
+   *  a state that already contains the effects of every later step. */
+  worldTrail?: (Record<string, unknown> | null)[];
 }
 export interface ReviewPayload {
   task: ApiTask;
