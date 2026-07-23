@@ -235,3 +235,40 @@ describe("hydrate + persistence projections", () => {
     expect(payloads[0].check).toEqual({ kind: "state_true", path: "x" });
   });
 });
+
+describe("multi-round corrections (iteratively steering the agent)", () => {
+  it("correcting a RE-RUN step keeps the earlier branch's steps", () => {
+    // Round 1: correct step 2 → agent re-runs, producing 3 new steps (idx 3,4,5).
+    const round1 = reducer(makeInitialState(data), {
+      t: "correctAndRerun", fromStep: 2, mode: "agent",
+      branch: [
+        { idx: 3, type: "click", tabId: "shop", description: "r1-a" },
+        { idx: 4, type: "click", tabId: "shop", description: "r1-b" },
+        { idx: 5, type: "click", tabId: "shop", description: "r1-c" },
+      ],
+    });
+    expect(visibleSteps(round1).map((s) => s.description)).toEqual(["a", "b", "r1-a", "r1-b", "r1-c"]);
+
+    // Round 2: correct step 4 — which lives INSIDE round 1's branch. The canonical
+    // run only has 3 steps, so a naive slice would drop r1-a/r1-b.
+    const round2 = reducer(round1, {
+      t: "correctAndRerun", fromStep: 4, mode: "agent",
+      branch: [{ idx: 5, type: "submit", tabId: "shop", description: "r2-a" }],
+    });
+    expect(visibleSteps(round2).map((s) => s.description)).toEqual(["a", "b", "r1-a", "r1-b", "r2-a"]);
+  });
+
+  it("re-run steps stay reviewable so the annotator can keep iterating", () => {
+    const round1 = reducer(makeInitialState(data), {
+      t: "correctAndRerun", fromStep: 2, mode: "agent",
+      branch: [{ idx: 3, type: "click", tabId: "shop", description: "r1-a" }],
+    });
+    const rerunStep = visibleSteps(round1)[2];
+    // the step is MARKED as coming from a re-run (provenance)…
+    expect(isResolved(round1, rerunStep)).toBe(true);
+    // …but is NOT yet verified, so Verify/Correct apply to it and it can be re-corrected
+    expect(isVerified(round1, rerunStep)).toBe(false);
+    const verified = reducer({ ...round1, step: 2 }, { t: "verifyStep" });
+    expect(isVerified(verified, rerunStep)).toBe(true);
+  });
+});

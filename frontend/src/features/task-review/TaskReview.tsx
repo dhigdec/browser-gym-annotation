@@ -428,7 +428,13 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
                     if (res.gymResume) setLiveResume(res.gymResume);
                     // Fork at the correction point: re-index the continuation to fromStep+1…
                     const branch = res.steps.map((s, i) => ({ ...s, idx: fromStep + i + 1 }));
-                    if (sessionId) await rerunGymBranch(sessionId, { fromStep, steps: branch, mode: "agent", correction: text.trim() });
+                    // Persist the branch relative to the CANONICAL prefix, so a reload
+                    // rebuilds the full multi-round trace. Correcting a step inside an
+                    // earlier branch would otherwise persist a fromStep past the
+                    // (shorter) canonical run and restore with a gap.
+                    const canonKeep = Math.min(fromStep, data.steps.length);
+                    const fullTail = [...steps.slice(canonKeep, fromStep), ...branch];
+                    if (sessionId) await rerunGymBranch(sessionId, { fromStep: canonKeep, steps: fullTail, mode: "agent", correction: text.trim() });
                     dispatch({ t: "correctAndRerun", fromStep, branch, mode: "agent", gymReward: res.reward });
                   } else {
                     setDriveError("The live agent couldn't continue from that state — the gym may be unreachable or the model unavailable. Try again.");

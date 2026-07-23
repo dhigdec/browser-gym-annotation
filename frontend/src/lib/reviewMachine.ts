@@ -22,6 +22,7 @@ export function makeInitialState(data: ReviewData): ReviewState {
     edits: {},
     results: {},
     branchTail: null,
+    baseSteps: null,
     rerunMode: null,
     gymResumeReward: null,
     serverSubmission: null,
@@ -117,10 +118,14 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
       // the rebuilt array (which crashed the reviewer when correcting a late step).
       const tail = a.branch ?? s.data.correctedTail;
       const newTotal = a.fromStep + tail.length;
+      // Keep everything up to the correction point FROM THE VISIBLE TRACE, so a
+      // correction on a re-run step preserves the earlier branch's steps.
+      const keptPrefix = visibleSteps(s).slice(0, a.fromStep);
       return {
         ...s,
         rerunFrom: a.fromStep,
         branchTail: a.branch,
+        baseSteps: keptPrefix,
         rerunMode: a.mode,
         verifiedThrough: Math.min(s.verifiedThrough, a.fromStep),
         stepsApproved: false,
@@ -168,6 +173,8 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
         ...s,
         rerunFrom: a.rerunFrom,
         branchTail: a.branchTail ?? s.branchTail,
+        // On reload the persisted branch is restored onto the canonical prefix.
+        baseSteps: null,
         rerunMode: a.rerunMode ?? s.rerunMode,
         added: a.added ?? s.added,
         edits: a.edits ?? s.edits,
@@ -205,6 +212,10 @@ export function visibleSteps(s: ReviewState): Step[] {
   if (s.rerunFrom == null) return s.data.steps;
   // Prefer the server-computed branch (M6); fall back to the offline fixture tail.
   const tail = s.branchTail ?? s.data.correctedTail;
+  // Fork off the trace the annotator was ACTUALLY looking at when they corrected
+  // (which may already contain earlier re-run steps), not the canonical run — the
+  // canonical is often shorter, and slicing it would drop earlier branch steps.
+  if (s.baseSteps) return [...s.baseSteps, ...tail];
   // Fork at the ACTUAL correction point (rerunFrom), not the error step: keep the
   // first `rerunFrom` original steps, then the branch (which the backend
   // re-indexes contiguously from rerunFrom+1). This keeps idx values unique and

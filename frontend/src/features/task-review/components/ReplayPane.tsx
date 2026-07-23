@@ -95,18 +95,20 @@ function StepCard({ step, stepNumber, resolved, verified, onVerify, onCorrect }:
         Step {stepNumber} · {step.type}
       </span>
       <span style={{ flex: 1, minWidth: 0, fontSize: "0.84rem", fontWeight: weight.semibold, color: t.n0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{step.description}</span>
-      {resolved ? (
-        <span style={{ fontSize: "0.6875rem", fontWeight: weight.bold, textTransform: "uppercase", letterSpacing: "0.04em", color: pink, background: `color-mix(in srgb, ${pink} 12%, transparent)`, padding: "5px 10px", borderRadius: t.radiusMd, whiteSpace: "nowrap" }}>Re-run branch</span>
-      ) : (
-        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-          {verified ? (
-            <Pill onClick={onVerify} bg={t.greenLite} border={`color-mix(in srgb, ${t.green} 45%, ${t.n9})`} color={t.greenDark} leading={<Icon name="check" size={14} stroke={2.4} color={t.greenDark} />}>Verified</Pill>
-          ) : (
-            <Pill onClick={onVerify} bg={t.n9} border={t.n6} color={t.n1} leading={<Icon name="check" size={14} stroke={2} />}>Verify</Pill>
-          )}
-          <Pill onClick={onCorrect} bg={`color-mix(in srgb, ${t.primary6} 10%, transparent)`} border={`color-mix(in srgb, ${t.primary6} 25%, transparent)`} color={t.primary6} leading={<Icon name="pencil" size={13} />}>Correct</Pill>
-        </div>
-      )}
+      {/* A re-run step is MARKED as such (provenance) but stays fully reviewable —
+          the annotator must be able to verify + correct the new steps to iterate
+          the agent toward the target across rounds. */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+        {resolved && (
+          <span style={{ fontSize: "0.6875rem", fontWeight: weight.bold, textTransform: "uppercase", letterSpacing: "0.04em", color: pink, background: `color-mix(in srgb, ${pink} 12%, transparent)`, padding: "5px 10px", borderRadius: t.radiusMd, whiteSpace: "nowrap" }}>Re-run</span>
+        )}
+        {verified ? (
+          <Pill onClick={onVerify} bg={t.greenLite} border={`color-mix(in srgb, ${t.green} 45%, ${t.n9})`} color={t.greenDark} leading={<Icon name="check" size={14} stroke={2.4} color={t.greenDark} />}>Verified</Pill>
+        ) : (
+          <Pill onClick={onVerify} bg={t.n9} border={t.n6} color={t.n1} leading={<Icon name="check" size={14} stroke={2} />}>Verify</Pill>
+        )}
+        <Pill onClick={onCorrect} bg={`color-mix(in srgb, ${t.primary6} 10%, transparent)`} border={`color-mix(in srgb, ${t.primary6} 25%, transparent)`} color={t.primary6} leading={<Icon name="pencil" size={13} />}>Correct</Pill>
+      </div>
     </div>
   );
 }

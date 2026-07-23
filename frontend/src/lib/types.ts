@@ -148,6 +148,11 @@ export interface ReviewState {
   results: Record<string, string>;
   /** server-computed corrected branch (M6); null → offline fixture tail. */
   branchTail: Step[] | null;
+  /** The steps KEPT before the latest correction point. Captured from the trace the
+   *  annotator was actually looking at, so correcting a step inside an earlier
+   *  re-run branch keeps that branch's steps instead of slicing the (shorter)
+   *  canonical run and silently dropping them. null → fork off the canonical. */
+  baseSteps: Step[] | null;
   /** how the branch was produced (M6b): "agent" | "deterministic" | null. */
   rerunMode: string | null;
   /** real gym verdict after a resume-from-corrected-state (M-resume); overrides
