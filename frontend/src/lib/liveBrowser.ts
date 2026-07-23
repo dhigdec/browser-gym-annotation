@@ -673,12 +673,16 @@ export class EventRecorder {
       void this.flush();
       return;
     }
-    if (this.handle === null) {
-      this.handle = this.timers.set(() => {
-        this.handle = null;
-        void this.flush();
-      }, this.cfg.flushMs ?? EVENT_FLUSH_MS);
-    }
+    this.rearm();
+  }
+
+  /** Schedule the next flush, unless one is already scheduled. */
+  private rearm(): void {
+    if (this.handle !== null) return;
+    this.handle = this.timers.set(() => {
+      this.handle = null;
+      void this.flush();
+    }, this.cfg.flushMs ?? EVENT_FLUSH_MS);
   }
 
   /** Returns how many events the server accepted. A failed POST puts the batch
@@ -708,6 +712,13 @@ export class EventRecorder {
         return out?.recorded ?? batch.length;
       } catch {
         this.queue = [...batch, ...this.queue];
+        // Re-arm. flush() cleared the pending timer on entry, so without this a
+        // single failed POST leaves the batch queued with nothing scheduled to
+        // send it — and the recorder goes quiet for the rest of the session
+        // unless the annotator happens to generate another BATCH_AT events.
+        // Silent, and it loses exactly the interactions somebody is mid-way
+        // through recording.
+        this.rearm();
         return 0;
       } finally {
         this.inFlight = null;

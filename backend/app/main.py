@@ -14,6 +14,7 @@ from app.api.export import router as export_router
 from app.api.gym import router as gym_router
 from app.api.qa import router as qa_router
 from app.api.sessions import router as sessions_router
+from app.api.disposition import router as disposition_router
 from app.api.tasks import router as tasks_router
 from app.api.versions import router as versions_router
 from app.config import settings
@@ -110,6 +111,7 @@ app.include_router(auth_router)                              # public: login / r
 app.include_router(tasks_router, dependencies=_AUTHED)
 app.include_router(sessions_router, dependencies=_AUTHED)
 app.include_router(versions_router, dependencies=_AUTHED)
+app.include_router(disposition_router, dependencies=_AUTHED)
 app.include_router(gym_router, dependencies=_AUTHED)
 app.include_router(qa_router, dependencies=_AUTHED)
 app.include_router(export_router, dependencies=_AUTHED)

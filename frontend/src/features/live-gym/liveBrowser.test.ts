@@ -543,3 +543,29 @@ describe("describeFocused", () => {
     expect(calls.map((c) => c.url.split("/").pop())).toEqual(["describe", "focused"]);
   });
 });
+
+describe("EventRecorder retry", () => {
+  it("keeps trying after a failed batch instead of going quiet", async () => {
+    // Regression: flush() clears the pending timer on entry and re-queues a
+    // failed batch at the front — but never re-armed the timer. One failed POST
+    // therefore left the batch queued with nothing scheduled to send it, and the
+    // recorder went silent for the rest of the session, losing exactly the
+    // interactions somebody was mid-way through recording.
+    const clock = fakeTimers();
+    let fail = true;
+    const { impl, calls } = fakeFetch(() => ({ ok: !fail }));
+    const rec = new EventRecorder({ attemptId: "s-1", fetchImpl: impl, timers: clock.timers, batchAt: 1 });
+
+    rec.push({ kind: "click", target: { testId: "a" } });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls.length).toBe(1);
+
+    fail = false;
+    clock.advance(2000);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls.length).toBe(2);
+    expect((calls[1].body as unknown[]).length).toBe(1);
+  });
+});

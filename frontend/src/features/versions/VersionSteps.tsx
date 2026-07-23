@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ACTION_COLOR, Icon, t, tint, weight, type ActionType } from "../../ds";
 import {
   applyVerdict,
@@ -116,6 +116,25 @@ export function VersionSteps({
   const tally = verdictTally(steps);
   const originOf = (step: VersionStep) => (step.versionId ? versionNos[step.versionId] : undefined);
 
+  // A fork is not idempotent: every call mints a new candidate version. The
+  // handlers live in the parent, so the guard has to be HERE — otherwise a
+  // double-click (or an impatient second click while the request is in flight)
+  // silently creates two branches off the same step, and the annotator has to
+  // work out which of two identical-looking candidates to keep.
+  const [forking, setForking] = useState(false);
+  const forkingRef = useRef(false);
+  const fork = (run: (step: VersionStep) => void | Promise<void>) => (step: VersionStep) => {
+    if (forkingRef.current) return;
+    forkingRef.current = true;
+    setForking(true);
+    void Promise.resolve(run(step)).finally(() => {
+      forkingRef.current = false;
+      setForking(false);
+    });
+  };
+  const rejectStep = fork(onRejectStep);
+  const continueAfter = fork(onContinueAfter);
+
   return (
     <div style={{ background: t.n9, border: `1px solid ${t.n7}`, borderRadius: t.radiusXl, boxShadow: t.shadowMd, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 18px", borderBottom: `1px solid ${t.n7}` }}>
@@ -221,10 +240,10 @@ export function VersionSteps({
                     {/* Two separate commands with two separate sentences. A single
                         button with a before/after toggle is how a rejected action
                         ends up kept in the golden trajectory. */}
-                    <Action tone={t.redDark} hint={FORK_COPY.before.hint} onClick={() => onRejectStep(s)} disabled={busy}>
+                    <Action tone={t.redDark} hint={FORK_COPY.before.hint} onClick={() => rejectStep(s)} disabled={busy || forking}>
                       <Icon name="branch" size={13} color={t.redDark} /> {FORK_COPY.before.action}
                     </Action>
-                    <Action tone={t.primary6} hint={FORK_COPY.after.hint} onClick={() => onContinueAfter(s)} disabled={busy}>
+                    <Action tone={t.primary6} hint={FORK_COPY.after.hint} onClick={() => continueAfter(s)} disabled={busy || forking}>
                       <Icon name="chevronRight" size={13} color={t.primary6} /> {FORK_COPY.after.action}
                     </Action>
                   </div>
@@ -252,13 +271,25 @@ export function useVersionSteps(sessionId: string | null, versionId: string | nu
   const [error, setError] = useState<string | null>(null);
   const [busyStepId, setBusyStepId] = useState<string | null>(null);
 
+  // Which fetch owns the view. Two versions' step lists look identical once
+  // rendered, so a slow response for the version the annotator just left would
+  // paint over the one they are reading — and they would then verdict and fork
+  // against rows belonging to a different branch.
+  const genRef = useRef(0);
+
   const reload = useCallback(async () => {
+    const gen = ++genRef.current;
     if (!sessionId || !versionId) {
       setSteps([]);
       return;
     }
     setLoading(true);
+    // Clear FIRST. Holding the previous version's rows while the new ones load
+    // shows the wrong steps under the right header, which is worse than an empty
+    // list because it looks correct.
+    setSteps([]);
     const res = await fetchVersionSteps(sessionId, versionId);
+    if (gen !== genRef.current) return; // a newer request already owns the view
     setLoading(false);
     if (!res.ok) {
       setError(res.message);

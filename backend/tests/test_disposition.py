@@ -11,22 +11,19 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import Depends
 
 from app import models
 from app.api.disposition import router as disposition_router
-from app.auth import current_annotator
 from app.main import app
 
-# main.py owns router registration. Until the integrator adds it there, wire the
-# router up here so these tests exercise the real HTTP surface — including the
-# router-level auth gate — instead of quietly asserting against 404s. The identity
-# check (not a path check) is what makes this a no-op the moment main.py owns it:
-# FastAPI keeps an included router as one opaque entry in app.routes and never
-# flattens its paths there, so matching on "/api/dispositions/summary" would never
-# fire and the router would be registered twice.
-if not any(getattr(r, "original_router", None) is disposition_router for r in app.routes):
-    app.include_router(disposition_router, dependencies=[Depends(current_annotator)])
+def test_the_router_is_registered_in_the_app_itself():
+    """The suite passed 25 tests while every one of these routes 404'd in the real
+    application, because the router was only mounted inside this file. A feature
+    the app does not serve is not a feature — assert the wiring, not just the
+    handlers."""
+    assert any(getattr(r, "original_router", None) is disposition_router for r in app.routes), (
+        "app/main.py must include the disposition router"
+    )
 
 
 @pytest.fixture()

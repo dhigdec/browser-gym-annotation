@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app import canonical
 from app.agent import deterministic_branch, generate_branch
 from app.api.tasks import _FIXTURE, task_fixture
 from app.auth import current_annotator
@@ -235,18 +236,16 @@ def _latest_benchmark_for_session(db: Session, session_id: UUID) -> BenchmarkRun
 
 
 def _canonical_gym_verdict(db: Session, task_id: UUID) -> BenchmarkRun | None:
-    """The CANONICAL breaker verdict for a task — the benchmark of the OLDEST gym
-    system run carrying a real replay payload (mirrors gym persisted-review's
-    'oldest raw' selection), so every annotator's baseline scores from the exact
-    breaker they see, never a stranger's re-run."""
-    trajs = db.scalars(
-        select(Trajectory)
-        .join(ReviewSession, ReviewSession.id == Trajectory.session_id)
-        .where(ReviewSession.task_id == task_id, Trajectory.source == "gym")
-        .order_by(Trajectory.created_at.asc())
-        .limit(50)
-    ).all()
-    canon = next((t for t in trajs if t.raw), None)
+    """The CANONICAL breaker verdict for a task, so every annotator's baseline
+    scores from the exact breaker they SEE.
+
+    Resolved through the one resolver rather than a fourth private copy of the
+    rule. A copy here is worse than elsewhere: it decides the reward while
+    persisted-review decides the trajectory, so any drift between them scores an
+    annotator against a run that is not the one on their screen — silently, and
+    with a plausible-looking number.
+    """
+    canon = canonical.for_task(db, task_id)
     return _latest_benchmark_for_session(db, canon.session_id) if canon is not None else None
 
 
