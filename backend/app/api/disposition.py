@@ -48,7 +48,6 @@ class ProposeBody(_NulSafe):
     evidence: list[EvidenceIn] = []
     # The client knows the workspace it actually drove; the server falls back to
     # the attempt's own versions/checkpoints when it doesn't say.
-    environmentImageDigest: str = Field(default="", max_length=96)
     expectedRevision: int
 
 
@@ -80,7 +79,6 @@ def propose_disposition(
             disposition=body.disposition, note=body.note,
             evidence=[e.model_dump() for e in body.evidence],
             expected_revision=body.expectedRevision,
-            environment_image_digest=body.environmentImageDigest,
         )
     except service.DispositionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

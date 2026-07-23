@@ -71,12 +71,20 @@ def _evidence(breaker) -> list[dict]:
     ]
 
 
+def _stamp_environment(db, sid: str, digest: str = "sha256:envA") -> None:
+    """Give the attempt a real environment to be found in. The server derives the
+    digest from the attempt itself — a claimant does not get to name the
+    environment they are blaming — so a test that cares about it has to create
+    one, exactly as a real run would."""
+    db.add(models.EnvironmentCheckpoint(attempt_id=UUID(sid), world={}, environment_image_digest=digest))
+    db.commit()
+
+
 def _propose(client, sid: str, **over):
     body = {
         "disposition": "environment_broken",
         "note": "add-to-cart 500s on every retry",
         "evidence": [],
-        "environmentImageDigest": "sha256:envA",
         "expectedRevision": 0,
     }
     body.update(over)
@@ -135,14 +143,31 @@ def test_evidence_that_cites_a_row_which_does_not_exist_is_refused(client, break
     assert _propose(client, sid, evidence=[{"note": "trust me"}]).status_code == 422
 
 
-def test_a_disposition_records_which_environment_and_task_revision_it_was_made_in(client, breaker):
+def test_a_disposition_records_which_environment_and_task_revision_it_was_made_in(client, breaker, db_session):
     """A fix cannot be verified against an environment nobody named."""
     sid = _open(client, breaker.external_id)
-    out = _propose(client, sid, evidence=_evidence(breaker),
-                   environmentImageDigest="sha256:envA").json()
+    db_session.add(models.EnvironmentCheckpoint(
+        attempt_id=UUID(sid), world={}, environment_image_digest="sha256:envA",
+    ))
+    db_session.commit()
+    out = _propose(client, sid, evidence=_evidence(breaker)).json()
     assert out["environmentImageDigest"] == "sha256:envA" and out["taskRevision"] == 1
     assert out["history"][0]["environmentImageDigest"] == "sha256:envA"
     assert out["history"][0]["taskRevision"] == 1
+
+
+def test_the_claimant_cannot_name_the_environment_they_are_blaming(client, breaker, db_session):
+    """The one person with a motive to blame the environment is the person whose
+    attempt just failed. If they supply the digest, a fix gets verified against an
+    image the attempt never ran in — and the claim still looks fully evidenced."""
+    sid = _open(client, breaker.external_id)
+    db_session.add(models.EnvironmentCheckpoint(
+        attempt_id=UUID(sid), world={}, environment_image_digest="sha256:real",
+    ))
+    db_session.commit()
+    out = _propose(client, sid, disposition="environment_broken", evidence=_evidence(breaker),
+                   environmentImageDigest="sha256:whatever-i-say").json()
+    assert out["environmentImageDigest"] == "sha256:real"
 
 
 def test_the_environment_digest_falls_back_to_the_attempts_own_checkpoint(client, breaker, db_session):
@@ -151,7 +176,7 @@ def test_the_environment_digest_falls_back_to_the_attempts_own_checkpoint(client
         attempt_id=UUID(sid), world={}, environment_image_digest="sha256:envB",
     ))
     db_session.commit()
-    out = _propose(client, sid, evidence=_evidence(breaker), environmentImageDigest="").json()
+    out = _propose(client, sid, evidence=_evidence(breaker)).json()
     assert out["environmentImageDigest"] == "sha256:envB"
 
 
@@ -260,11 +285,12 @@ def test_requesting_rework_without_saying_what_to_redo_is_refused(client, review
 
 
 # --------------------------------------------------------------------------- aggregate
-def test_the_summary_splits_each_disposition_into_adjudicated_and_proposed(client_for, reviewer_client, breaker):
+def test_the_summary_splits_each_disposition_into_adjudicated_and_proposed(client_for, reviewer_client, breaker, db_session):
     """The blocker itself: forty attempts calling themselves environment_broken mean
     nothing until someone who did not run them agrees."""
     a, b = client_for("ela@deccan.ai"), client_for("nav@deccan.ai")
     sa, sb = _open(a, breaker.external_id), _open(b, breaker.external_id)
+    _stamp_environment(db_session, sa)
     _propose(a, sa, evidence=_evidence(breaker))
     _propose(b, sb, disposition="model_failure", note="clicked the wrong product", evidence=[])
     assert _decide(reviewer_client, sa, note="reproduced").status_code == 200
@@ -312,8 +338,9 @@ def test_the_aggregate_surfaces_are_reviewer_only(client, breaker):
     assert client.get("/api/dispositions/queue").status_code == 403
 
 
-def test_the_reviewer_queue_lists_proposals_still_waiting_on_a_ruling(client, reviewer_client, breaker):
+def test_the_reviewer_queue_lists_proposals_still_waiting_on_a_ruling(client, reviewer_client, breaker, db_session):
     sid = _open(client, breaker.external_id)
+    _stamp_environment(db_session, sid)
     _propose(client, sid, evidence=_evidence(breaker))
     waiting = reviewer_client.get("/api/dispositions/queue").json()["waiting"]
     assert [w["attemptId"] for w in waiting] == [sid]
@@ -368,3 +395,55 @@ def test_a_reject_after_rework_also_closes_the_door(client, reviewer_client, bre
     assert ruled.json()["reworkStatus"] == ""
     assert _propose(client, sid, evidence=_evidence(breaker),
                     expectedRevision=ruled.json()["revision"]).status_code == 409
+
+
+def test_overturned_evidence_is_not_shown_as_backing_the_ruling(client, reviewer_client, breaker):
+    """Evidence belongs to the CLAIM it was gathered for. Showing the annotator's
+    'the environment was broken' artifacts against a reviewer's 'the model failed'
+    ruling presents evidence collected to argue one thing as if it backed the
+    opposite — in the one report that exists to tell those two apart."""
+    sid = _open(client, breaker.external_id)
+    _propose(client, sid, disposition="environment_broken", evidence=_evidence(breaker))
+    mine = client.get(f"/api/sessions/{sid}/disposition").json()
+    assert mine["evidence"], "the annotator's own claim keeps its evidence"
+
+    ruled = _decide(reviewer_client, sid, decision="reject", disposition="model_failure",
+                    note="the env was fine; the agent gave up", expectedRevision=mine["revision"]).json()
+    assert ruled["disposition"] == "model_failure"
+    assert ruled["evidence"] == [], "the overturned claim's artifacts must not read as support"
+    # …and they are not lost — the ledger still holds them under the proposal.
+    proposed = [h for h in ruled["history"] if h["event"] == "proposed"][-1]
+    assert proposed["evidence"], "the artifacts survive on the claim they were gathered for"
+
+
+def test_an_accepted_proposal_keeps_its_evidence(client, reviewer_client, breaker):
+    """Nobody overturned it, so the artifacts do back what stands."""
+    sid = _open(client, breaker.external_id)
+    _propose(client, sid, disposition="environment_broken", evidence=_evidence(breaker))
+    out = _decide(reviewer_client, sid, note="reproduced").json()
+    assert out["disposition"] == "environment_broken" and out["evidence"]
+
+
+def test_the_reviewer_queue_holds_only_work_a_reviewer_can_do(client, reviewer_client, breaker, db_session):
+    """A queue that cannot be emptied stops being read. A rework request IS the
+    reviewer's action — until the annotator answers it, the ball is theirs."""
+    sid = _open(client, breaker.external_id)
+    _propose(client, sid, evidence=_evidence(breaker))
+    assert [w["attemptId"] for w in reviewer_client.get("/api/dispositions/queue").json()["waiting"]] == [sid]
+
+    out = _decide(reviewer_client, sid, decision="request_rework", note="attach the dom dump").json()
+    assert reviewer_client.get("/api/dispositions/queue").json()["waiting"] == [], (
+        "the reviewer already acted; it is the annotator's turn"
+    )
+
+    # …and it comes back the moment the annotator answers.
+    _propose(client, sid, evidence=_evidence(breaker), note="dom dump attached",
+             expectedRevision=out["revision"])
+    assert [w["attemptId"] for w in reviewer_client.get("/api/dispositions/queue").json()["waiting"]] == [sid]
+
+
+def test_an_adjudicated_attempt_leaves_the_queue(client, reviewer_client, breaker):
+    sid = _open(client, breaker.external_id)
+    _propose(client, sid, evidence=_evidence(breaker))
+    _decide(reviewer_client, sid, note="reproduced")
+    assert reviewer_client.get("/api/dispositions/queue").json()["waiting"] == []

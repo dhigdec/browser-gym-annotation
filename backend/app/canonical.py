@@ -20,11 +20,15 @@ So canonical is BOUND, not guessed:
 
 * an explicit `CanonicalRun` row is the source of truth, and nothing derived from
   timestamps or payload shape may override it;
-* with nothing bound, the fallback prefers a run that is actually forkable (has a
-  world trail), then the earliest such run so canonical stays stable, then the
-  longer trace, then the id — because two runs recorded in the same second are
+* with nothing bound, the fallback takes the EARLIEST full run — then the longer
+  trace, then the id, because two runs recorded in the same second are
   indistinguishable by clock and the answer must not depend on the order the
-  storage engine happens to return rows in;
+  storage engine happens to return rows in. Forkability is deliberately not part
+  of that ordering: every curated breaker predates per-step world capture, so
+  ranking forkable runs first would hand canonical status to any later run,
+  including an annotator's prompt-edit re-run, on precisely the tasks this module
+  exists to serve. Canonical is an IDENTITY question, not a quality one, and a
+  prompt-edit re-run is excluded from candidacy outright;
 * an attempt already baselined keeps the base bound on its v1
   (`TrajectoryVersion.base_trajectory_id`, which existed for exactly this and was
   never read back), so re-binding a task cannot swap the run out from under a
@@ -250,6 +254,14 @@ def bind(
 
 
 # --------------------------------------------------------------------------- preflight
+def _binder_email(db: Session, binding: "CanonicalRun | None") -> str | None:
+    """Who bound this run, when they can still be named."""
+    if binding is None or not binding.bound_by_id:
+        return None
+    who = db.get(models.Annotator, binding.bound_by_id)
+    return who.email if who is not None else None
+
+
 def audit(db: Session, *, external_ids: list[str] | None = None, limit: int | None = None) -> dict:
     """Per gym task: does its canonical run have a world trail, and is there a
     better candidate sitting unused?
@@ -274,8 +286,11 @@ def audit(db: Session, *, external_ids: list[str] | None = None, limit: int | No
         rows.append({
             "taskId": task.external_id,
             "bound": binding is not None,
-            "boundBy": (db.get(models.Annotator, binding.bound_by_id).email
-                        if binding is not None and binding.bound_by_id else None),
+            # bound_by_id is ON DELETE SET NULL, but a deactivated-then-purged
+            # reviewer can also leave a dangling id, and db.get returns None for
+            # it — dereferencing .email there takes down the whole audit, which is
+            # the one report that tells anyone the dataset has a gap.
+            "boundBy": _binder_email(db, binding),
             "canonicalTrajectoryId": str(chosen.id) if chosen is not None else None,
             "canonicalSteps": evidence["steps"],
             "canonicalWorldSteps": evidence["worldSteps"],

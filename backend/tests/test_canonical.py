@@ -375,3 +375,21 @@ def test_reopening_a_task_serves_the_bound_run(client, db_session):
     db_session.commit()
     after = client.get(f"/api/gym/tasks/{tid}/persisted-review").json()
     assert len(after["steps"]) == 2 and after["replayed"] is True
+
+
+def test_the_audit_survives_a_binder_who_no_longer_exists(db_session):
+    """The audit is the one report that tells anyone the dataset has a gap. A
+    dangling annotator id must not take the whole thing down with an
+    AttributeError."""
+    tid = "M05/orphan_binder"
+    traj = _persist(db_session, tid, world=True, at=1)
+    task = _task(db_session, tid)
+    canonical.bind(db_session, task=task, trajectory=traj, actor=_reviewer(db_session, "gone@deccan.ai"))
+    db_session.commit()
+
+    binding = canonical.bound_run(db_session, task.id)
+    binding.bound_by_id = UUID("00000000-0000-0000-0000-0000000000ff")  # purged reviewer
+    db_session.commit()
+
+    row = next(r for r in canonical.audit(db_session)["tasks"] if r["taskId"] == tid)
+    assert row["bound"] is True and row["boundBy"] is None

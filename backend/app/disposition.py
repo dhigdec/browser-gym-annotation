@@ -265,9 +265,15 @@ def propose(
     note: str,
     evidence: list[dict],
     expected_revision: int,
-    environment_image_digest: str = "",
 ) -> dict:
-    """The annotator's claim about why their attempt ended the way it did."""
+    """The annotator's claim about why their attempt ended the way it did.
+
+    The environment digest is DERIVED, never accepted from the caller. The one
+    person with a motive to blame the environment is the person whose attempt
+    just failed, so letting them name which environment they are blaming would
+    send a fix to be verified against an image the attempt never ran in — and the
+    claim would still look fully evidenced.
+    """
     if disposition not in DISPOSITIONS:
         raise DispositionError(
             f"unknown disposition {disposition!r} — one of {', '.join(DISPOSITIONS)}"
@@ -284,7 +290,7 @@ def propose(
         raise DispositionError(
             f"{disposition} blames the harness — cite at least one artifact or checkpoint"
         )
-    digest = environment_image_digest or environment_digest(db, s)
+    digest = environment_digest(db, s)
     satisfies_rework = s.rework_status == REWORK_REQUESTED
     rnd = _round(db, s.id)
     rev = _cas(
@@ -424,6 +430,13 @@ def history(db: Session, attempt_id: UUID) -> list[dict]:
     ]
 
 
+def _evidence_backs_the_ruling(s: models.ReviewSession, latest: dict | None) -> bool:
+    """Whether the latest proposal's artifacts actually support what now stands.
+    They do when nobody overturned it — i.e. the standing disposition is still the
+    one that was proposed."""
+    return bool(latest) and s.disposition == latest.get("disposition")
+
+
 def describe(db: Session, s: models.ReviewSession) -> dict:
     """The attempt's disposition as the UI needs to restore it."""
     rows = history(db, s.id)
@@ -445,7 +458,13 @@ def describe(db: Session, s: models.ReviewSession) -> dict:
         "environmentImageDigest": (
             latest["environmentImageDigest"] if latest else environment_digest(db, s)
         ),
-        "evidence": latest["evidence"] if latest else [],
+        # Evidence belongs to the CLAIM it was gathered for. When a reviewer
+        # overturns a proposal the standing disposition is theirs, and attaching
+        # the annotator's artifacts to it would present evidence collected to
+        # argue "the environment was broken" as if it backed "the model failed" —
+        # in the one report that exists to tell those two apart. The artifacts are
+        # not lost; they are still in `history` under the proposal they support.
+        "evidence": latest["evidence"] if _evidence_backs_the_ruling(s, latest) else [],
         "round": latest["round"] if latest else 0,
         "history": rows,
         "taxonomy": list(DISPOSITIONS),
@@ -572,6 +591,11 @@ def queue(db: Session, *, limit: int = 200) -> list[dict]:
                 models.ReviewSession.disposition_by_id.is_(None),
                 models.ReviewSession.disposition_by_id == models.ReviewSession.annotator_id,
             ),
+            # A rework request IS the reviewer's action. Until the annotator
+            # answers it the ball is theirs, so leaving it in a queue titled
+            # "waiting on a reviewer" pads that queue with work nobody can do —
+            # and a queue that cannot be emptied stops being read.
+            models.ReviewSession.rework_status != REWORK_REQUESTED,
         )
         .order_by(models.ReviewSession.disposition_at)
         .limit(limit)
