@@ -1,14 +1,17 @@
 """Live gym endpoints (M6c/M8) — verify against the real world, and load real
 gym tasks into the review UI (persisting the run as a full DB record, M9)."""
 
+import contextlib
 import functools
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
+from uuid import UUID as _UUID
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import agent, gym_client, gym_review, jobs, models, verify
+from app import agent, gym_client, gym_review, jobs, models, verify, workspace
 from app.config import settings
 from app.db import SessionLocal, get_db
 
@@ -195,17 +198,50 @@ class RunReviewBody(BaseModel):
     agent: str = "oracle"
     seed: int = 0
     brief: str | None = None  # annotator prompt edit → re-drive the whole run under this brief
+    sessionId: str | None = None  # the attempt this run belongs to → isolated branch workspace
+
+
+@contextlib.contextmanager
+def _agent_workspace(attempt_id: str | None):
+    """A short-lived, ISOLATED gym for ONE batch agent run.
+
+    Never the annotator's own workspace: an agent run resets the world, and the
+    gym holds one global SESSION per process, so running against the human's
+    workspace would destroy their live session mid-review. The worker is torn down
+    when the run finishes, whatever the outcome.
+
+    Falls back to the shared gym when isolation is unavailable — explicitly, so
+    the caller can see it rather than silently sharing a world.
+    """
+    if not attempt_id or not workspace.isolation_available():
+        # Yield the MODULE (not a GymEndpoint) so the shared-gym path stays exactly
+        # what it was — same functions, same seams, nothing else changes behaviour.
+        yield gym_client
+        return
+    lease = None
+    try:
+        with SessionLocal() as db:
+            lease = workspace.acquire(db, _UUID(str(attempt_id)), purpose=workspace.AGENT_BRANCH)
+        yield gym_client.GymEndpoint(lease.endpoint) if lease else gym_client
+    finally:
+        if lease is not None:
+            with SessionLocal() as db:  # reclaim the worker; the human workspace is untouched
+                fresh = db.get(models.WorkspaceLease, lease.id)
+                if fresh is not None:
+                    workspace.release(db, fresh)
 
 
 @_gym_job
-def _run_review_job(task_id: str, agent: str, seed: int, brief: str | None = None) -> dict:
+def _run_review_job(task_id: str, agent: str, seed: int, brief: str | None = None, attempt_id: str | None = None) -> dict:
     """The slow work: run a real agent on a gym task, persist it as a full DB
     record (task + seed state → session → trajectory + milestones), and return
     the review payload. Runs on a background thread (opens its own DB session).
     `brief` (annotator prompt edit) re-drives the whole run under the new prompt."""
-    r = gym_client.run_agent(task_id, agent, seed, brief=brief)
-    if r is None:
-        raise jobs.JobFailure("gym unreachable or run failed")
+    with _agent_workspace(attempt_id) as gym:
+        r = gym.run_agent(task_id, agent, seed, brief=brief)
+        if r is None:
+            raise jobs.JobFailure("gym unreachable or run failed")
+        _post = (gym.state(), gym.world())  # read the world from the SAME workspace
     _t = r.get("trajectory") or {}
     if not _t.get("steps") and not (_t.get("verifier_result") or {}):
         # Zero actions WITH a verdict is a legitimate outcome (the agent answered,
@@ -213,8 +249,8 @@ def _run_review_job(task_id: str, agent: str, seed: int, brief: str | None = Non
         # actions nor a verdict is a real failure.
         raise jobs.JobFailure("run produced no trajectory (task may lack an oracle solver)")
     review = gym_review.to_review(r, task_id, agent)
-    review["backendState"] = gym_client.state()  # the REAL post-run world (cart/orders/returns/account)
-    review.setdefault("gymResume", {})["worldState"] = gym_client.world()  # full multi-app world, for resume
+    review["backendState"] = _post[0]          # the REAL post-run world (cart/orders/returns/account)
+    review.setdefault("gymResume", {})["worldState"] = _post[1]  # full multi-app world, for resume
     with SessionLocal() as db:
         try:
             review["sessionId"] = _persist_gym_review(db, task_id, agent, r, review, brief=brief)
@@ -231,7 +267,7 @@ def gym_run_review(task_id: str, body: RunReviewBody) -> dict:
     """M8/M9 — enqueue a real agent run + persist as a background job; returns a
     jobId to poll. The browser-driving run is slow (up to 260s), so it runs OFF
     the request path so a proxy/read timeout can't drop a finished review."""
-    job = jobs.store.submit("run-review", _run_review_job, task_id, body.agent, body.seed, body.brief)
+    job = jobs.store.submit("run-review", _run_review_job, task_id, body.agent, body.seed, body.brief, body.sessionId)
     return {"jobId": job.id, "status": job.status}
 
 
@@ -327,9 +363,11 @@ def gym_resume(body: ResumeBody) -> dict:
 
 @_gym_job
 def _resume_run_job(task_id: str, seed: int, state: dict, url: str, step, agent: str, origin_session_id: str | None = None, correction: str = "") -> dict:
-    r = gym_client.resume_run(task_id, seed, state, url, step, agent, correction=correction)
-    if r is None:
-        raise jobs.JobFailure("gym unreachable, task not found, or resume-run failed")
+    with _agent_workspace(origin_session_id) as gym:
+        r = gym.resume_run(task_id, seed, state, url, step, agent, correction=correction)
+        if r is None:
+            raise jobs.JobFailure("gym unreachable, task not found, or resume-run failed")
+        _post = (gym.state(), gym.world())  # read the world from the SAME workspace
     _traj = r.get("trajectory") or {}
     if not _traj.get("steps") and not (_traj.get("verifier_result") or {}):
         # NO actions AND no verdict = a genuine agent/gym failure. A run with a
@@ -341,8 +379,8 @@ def _resume_run_job(task_id: str, seed: int, state: dict, url: str, step, agent:
         reason = f"the {missing.split('_')[0].lower()} agent produced no steps and no verdict (it may be rate-limited, unavailable, or missing {missing})"
         raise jobs.JobFailure(f"resume run produced no trajectory — {reason}")
     review = gym_review.to_review(r, task_id, agent)
-    review["backendState"] = gym_client.state()
-    review.setdefault("gymResume", {})["worldState"] = gym_client.world()
+    review["backendState"] = _post[0]
+    review.setdefault("gymResume", {})["worldState"] = _post[1]
     vr = (r.get("trajectory") or {}).get("verifier_result") or {}
     review["gymReward"] = 1 if vr.get("success") else 0  # the driven-forward verdict
     # Persist the driven-forward run as a real, scorable record — but WITHOUT a

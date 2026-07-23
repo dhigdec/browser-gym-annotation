@@ -173,3 +173,43 @@ def test_failed_provisioning_does_not_wedge_the_attempt(db_session, attempt, mon
         select(models.WorkspaceLease).where(models.WorkspaceLease.attempt_id == attempt.id)
     ).all()
     assert rows and all(r.status == "terminated" for r in rows)
+
+
+def test_agent_run_uses_its_own_workspace_and_never_the_humans(db_session, attempt, iso, monkeypatch, _session_factory):
+    """THE isolation rule, end to end: a batch agent run must get its own
+    short-lived branch workspace and release it, leaving the annotator's live
+    workspace untouched. Running against the human's gym would reset the world
+    out from under them mid-review."""
+    from app.api import gym as gym_api
+
+    human = manager.acquire(db_session, attempt.id, purpose=manager.HUMAN)
+    human_endpoint = human.endpoint
+
+    monkeypatch.setattr(gym_api.workspace, "isolation_available", lambda: True)
+    # the job opens its OWN session in production; point that at the test DB
+    monkeypatch.setattr(gym_api, "SessionLocal", _session_factory)
+
+    used: list[str] = []
+    with gym_api._agent_workspace(str(attempt.id)) as gym:
+        used.append(gym.base_url)
+
+    assert used and used[0] != human_endpoint, "the agent must not drive the human's workspace"
+
+    db_session.expire_all()
+    db_session.refresh(human)
+    assert human.status == "ready", "the human workspace must survive the agent run"
+    assert manager.endpoint_for(db_session, attempt.id).base_url == human_endpoint
+
+    # the branch worker was reclaimed when the run finished
+    branch = manager.active_lease(db_session, attempt.id, purpose=manager.AGENT_BRANCH)
+    assert branch is None, "the branch worker must be torn down after the run"
+
+
+def test_agent_workspace_falls_back_to_the_shared_gym_without_isolation(db_session, attempt):
+    """Without isolation the behaviour must be exactly what it was — the module,
+    same seams — so nothing silently changes for existing flows."""
+    from app import gym_client
+    from app.api import gym as gym_api
+
+    with gym_api._agent_workspace(str(attempt.id)) as gym:
+        assert gym is gym_client
