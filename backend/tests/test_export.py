@@ -75,3 +75,44 @@ def test_export_reads_the_frozen_snapshot_not_the_live_suite(client, monkeypatch
     assert after["reward"] == 1                     # unchanged — read from the snapshot
     assert len(after["verifiers"]) == 14            # not the forged single verifier
     assert not any(v["assertion"] == "trivially true" for v in after["verifiers"])
+
+
+def test_gym_sample_exports_the_reviewed_trajectory(client, db_session):
+    """A GYM session owns no Trajectory row — it reviews the shared canonical run.
+    Export must resolve that run, or every gym sample ships with an empty
+    recorded_trajectory and a golden that is empty (or just the correction tail
+    starting at a non-zero index). This is the dataset-integrity regression."""
+    import sys
+
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
+    from test_gym import _synthetic_gym_review
+    from app.api.gym import _persist_gym_review
+
+    task_id = "M91/export_integrity"
+    run, review = _synthetic_gym_review(task_id, success=False)   # 3-step breaking run
+    _persist_gym_review(db_session, task_id, "openai", run, review)
+
+    # the human reviews it in their OWN session (which has no Trajectory of its own)
+    sid = client.post(f"/api/tasks/{task_id}/sessions", json={"fresh": True}).json()["sessionId"]
+    # correct at step 1 → the branch carries the corrected tail
+    client.post(f"/api/sessions/{sid}/rerun-gym", json={
+        "fromStep": 1, "mode": "agent", "correction": "verify before acting",
+        "steps": [{"idx": 2, "type": "click", "tabId": "shop", "description": "corrected tail"}],
+    })
+    vs = [{"id": v["id"], "level": v["level"], "assertion": v["assertion"], "code": v["code"],
+           "check": None, "failsUntilCorrected": False, "placeholder": False,
+           "addedByHuman": False, "gymResult": v.get("gymResult")} for v in review["verifiers"]]
+    client.put(f"/api/sessions/{sid}/suite", json={"verifiers": vs})
+    client.post(f"/api/sessions/{sid}/run", json={"corrected": True, "verifiers": [], "overrides": []})
+    client.post(f"/api/sessions/{sid}/submit", json={
+        "reward": 0, "override": True, "overrideReason": "confirmed breaker", "kind": "breaker"})
+
+    b = client.get(f"/api/export/samples/{sid}").json()
+    # the run under review must actually ship
+    assert len(b["recorded_trajectory"]) == 3, b["recorded_trajectory"]
+    assert [st["idx"] for st in b["recorded_trajectory"]] == [0, 1, 2]
+    # golden = canonical prefix (idx <= fromStep) + the corrected tail, not the tail alone
+    assert len(b["golden_trajectory"]) == 3, b["golden_trajectory"]
+    assert b["golden_trajectory"][0]["idx"] == 0, "golden must start at the beginning, not mid-run"
+    assert b["golden_trajectory"][-1]["description"] == "corrected tail"
+    assert b["correction"]["from_step"] == 1

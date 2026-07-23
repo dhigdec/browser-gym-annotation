@@ -34,11 +34,35 @@ def _steps_of(traj: models.Trajectory | None) -> list[dict]:
     } for s in sorted(traj.steps, key=lambda x: x.idx)]
 
 
+def _base_trajectory(db: Session, s: models.ReviewSession) -> models.Trajectory | None:
+    """The run the annotator ACTUALLY reviewed.
+
+    A fixture session owns its own Trajectory row. A GYM session does not — it
+    reviews the shared canonical run, which is persisted on the SYSTEM gym session
+    for the same task. Looking the trajectory up by the human session id alone
+    therefore found nothing and shipped every gym sample with an empty
+    recorded_trajectory (and a golden that was empty, or worse, only the correction
+    tail starting at a non-zero index). Resolve the canonical run exactly as
+    persisted-review does: the OLDEST gym trajectory carrying a replay payload for
+    this task.
+    """
+    own = _latest(db, models.Trajectory, s.id, models.Trajectory.created_at.desc())
+    if own is not None:
+        return own
+    rows = db.scalars(
+        select(models.Trajectory)
+        .join(models.ReviewSession, models.Trajectory.session_id == models.ReviewSession.id)
+        .where(models.ReviewSession.task_id == s.task_id, models.Trajectory.source == "gym")
+        .order_by(models.Trajectory.created_at.asc())
+    ).all()
+    return next((t for t in rows if t.raw), None)
+
+
 def build_sample(db: Session, s: models.ReviewSession) -> dict:
     """Assemble the deliverable bundle for one annotation session."""
     task = db.get(models.Task, s.task_id)
     annotator = db.get(models.Annotator, s.annotator_id) if s.annotator_id else None
-    traj = _latest(db, models.Trajectory, s.id, models.Trajectory.created_at.desc())
+    traj = _base_trajectory(db, s)
     branch = _latest(db, models.TrajectoryBranch, s.id, models.TrajectoryBranch.created_at.desc())
     suite = _latest(db, models.VerifierSuite, s.id, models.VerifierSuite.version.desc())
     run = None
@@ -76,6 +100,12 @@ def build_sample(db: Session, s: models.ReviewSession) -> dict:
         ]
         reward = frozen.get("reward")
         overridden = frozen.get("overridden", [])
+        # Trajectories frozen at submit time win over a live rebuild, so a shipped
+        # sample can never drift when the canonical run is re-captured later.
+        if frozen.get("recorded_trajectory") is not None:
+            recorded = frozen["recorded_trajectory"]
+        if frozen.get("golden_trajectory") is not None:
+            golden = frozen["golden_trajectory"]
     else:
         verifiers = []
         if suite:

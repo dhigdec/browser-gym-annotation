@@ -760,6 +760,28 @@ def submit(session_id: UUID, body: SubmitBody, current: Annotator = Depends(curr
     # Freeze the deliverable at submit time (Cluster A). export.build_sample reads
     # this snapshot, so nothing appended after the lock can rewrite the shipped
     # sample's reward or verifier suite.
+    # Freeze the TRAJECTORIES too, not just the suite/reward. The deliverable is the
+    # golden trajectory, so the shipped sample must carry the exact steps that were
+    # reviewed + corrected at submit time — immune to any later re-run, re-capture
+    # or branch edit. (Previously the snapshot held no steps at all, so export had
+    # to rebuild them live and gym samples shipped empty.)
+    from app.api.export import _base_trajectory, _steps_of  # local: avoid an import cycle
+
+    recorded_frozen = _steps_of(_base_trajectory(db, s))
+    branch_frozen = db.scalar(
+        select(TrajectoryBranch).where(TrajectoryBranch.session_id == s.id)
+    ) and _latest_branch(db, s.id)
+    if branch_frozen is not None:
+        head = [st for st in recorded_frozen if st["idx"] <= branch_frozen.from_step]
+        tail = (branch_frozen.steps or {}).get("steps", [])
+        golden_frozen = head + [
+            {"idx": branch_frozen.from_step + 1 + i, "type": t.get("type"),
+             "description": t.get("description"), "tab": t.get("tabId"),
+             "screenshot": t.get("image")}
+            for i, t in enumerate(tail)
+        ]
+    else:
+        golden_frozen = recorded_frozen
     snapshot = {
         "suite_version": suite.version,
         "reward": reward,
@@ -770,6 +792,8 @@ def submit(session_id: UUID, body: SubmitBody, current: Annotator = Depends(curr
              "check": v.check_ir or None, "gym_result": v.gym_result or None}
             for v in suite_verifiers
         ],
+        "recorded_trajectory": recorded_frozen,
+        "golden_trajectory": golden_frozen,
     }
     sub = Submission(
         session_id=s.id,
