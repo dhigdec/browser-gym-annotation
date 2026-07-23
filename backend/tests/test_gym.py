@@ -419,3 +419,31 @@ def test_zero_action_run_with_a_verdict_is_not_a_failure():
     with mock.patch.object(gym_client, "resume_run", return_value={"trajectory": {"steps": []}}):
         with pytest.raises(jobs.JobFailure):
             _resume_run_job("M1/x", 0, {}, "/", 1, "openai")
+
+
+def test_unproven_human_verifier_cannot_ride_a_passing_gym_verdict(client, db_session):
+    """Reward 1 must not coexist with a verifier the annotator added that has no
+    executable check — the human suite is what ships and what a lab re-runs."""
+    from app.api.gym import _persist_gym_review
+
+    task = "M92/human_suite_gate"
+    run, review = _synthetic_gym_review(task, success=True)      # gym says PASS
+    _persist_gym_review(db_session, task, "openai", run, review)
+
+    sid = client.post(f"/api/tasks/{task}/sessions", json={"fresh": True}).json()["sessionId"]
+    client.patch(f"/api/sessions/{sid}", json={"reviewedThrough": 999})
+    suite = [{"id": v["id"], "level": v["level"], "assertion": v["assertion"], "code": v["code"],
+              "check": None, "failsUntilCorrected": False, "placeholder": False,
+              "addedByHuman": False, "gymResult": v.get("gymResult")} for v in review["verifiers"]]
+    # gym milestones alone → the environment verdict stands
+    client.put(f"/api/sessions/{sid}/suite", json={"verifiers": suite})
+    assert client.post(f"/api/sessions/{sid}/run", json={"overrides": []}).json()["reward"] == 1
+
+    # the annotator adds a check they haven't made executable yet
+    suite.append({"id": "add-1", "level": "backend", "assertion": "refund really issued",
+                  "code": "/* define check */", "check": None, "failsUntilCorrected": False,
+                  "placeholder": True, "addedByHuman": True})
+    client.put(f"/api/sessions/{sid}/suite", json={"verifiers": suite})
+    out = client.post(f"/api/sessions/{sid}/run", json={"overrides": []}).json()
+    assert out["reward"] == 0, "an unproven human check must not be masked by the gym verdict"
+    assert out["results"]["add-1"] == "fail"

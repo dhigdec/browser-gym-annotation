@@ -15,6 +15,8 @@ export function makeInitialState(data: ReviewData): ReviewState {
     verifiersGenerated: false,
     benchmarkRun: false,
     submitted: false,
+    staleChecks: {},
+    serverReward: null,
     rerunFrom: null,
     overrides: {},
     activeLevel: "ui",
@@ -43,7 +45,7 @@ export type Action =
   | { t: "verifyStep" }
   | { t: "approveRemaining" }
   | { t: "generate" }
-  | { t: "benchmarkComplete"; results: Record<string, string> }
+  | { t: "benchmarkComplete"; results: Record<string, string>; reward?: number | null }
   | { t: "correctAndRerun"; fromStep: number; branch: Step[] | null; mode: string | null; gymReward?: number }
   | { t: "gymResumed"; reward: number }
   | { t: "setLevel"; level: VerifierLevel }
@@ -101,7 +103,7 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
     case "generate":
       return s.stepsApproved ? { ...s, verifiersGenerated: true, benchmarkRun: false, results: {} } : s;
     case "benchmarkComplete":
-      return s.verifiersGenerated ? { ...s, benchmarkRun: true, results: a.results } : s;
+      return s.verifiersGenerated ? { ...s, benchmarkRun: true, results: a.results, serverReward: a.reward ?? null } : s;
     case "gymResumed":
       // A gym task re-verified against the LIVE gym after a correction — the
       // real milestone verdict on the resumed corrected state is the reward.
@@ -146,8 +148,20 @@ export function reducer(s: ReviewState, a: Action): ReviewState {
       return { ...s, added: [...s.added, a.verifier], benchmarkRun: false, results: {}, submitted: false };
     case "removeVerifier":
       return { ...s, added: s.added.filter((v) => v.id !== a.id), benchmarkRun: false, results: {} };
-    case "editVerifier":
-      return { ...s, edits: { ...s.edits, [a.id]: { assertion: a.assertion, code: a.code } }, benchmarkRun: false, results: {}, submitted: false };
+    case "editVerifier": {
+      // Editing the CHECK text invalidates any compiled IR that came with the
+      // generated verifier: keeping it would score the OLD condition while showing
+      // the new text. Drop it so the verifier fails closed until it has a real
+      // executable check. (Editing only the prose assertion keeps the IR.)
+      const orig = s.data.verifiers.find((v) => v.id === a.id);
+      const codeChanged = !!orig && orig.code !== a.code;
+      return {
+        ...s,
+        edits: { ...s.edits, [a.id]: { assertion: a.assertion, code: a.code } },
+        staleChecks: codeChanged ? { ...s.staleChecks, [a.id]: true } : s.staleChecks,
+        benchmarkRun: false, results: {}, serverReward: null, submitted: false,
+      };
+    }
     case "override": {
       // Toggle: clicking the "1 override" pill removes the override (spec §3.2).
       // Overriding invalidates the last run — force a re-benchmark so the override
@@ -249,7 +263,11 @@ export function runSummary(s: ReviewState): Metric[] {
 export function allVerifiers(s: ReviewState): Verifier[] {
   return [...s.data.verifiers, ...s.added].map((v) => {
     const e = s.edits[v.id];
-    return e ? { ...v, assertion: e.assertion, code: e.code, placeholder: isPlaceholder(e.code) } : v;
+    if (!e) return v;
+    const edited: Verifier = { ...v, assertion: e.assertion, code: e.code, placeholder: isPlaceholder(e.code) };
+    // A stale IR would silently score the pre-edit condition — drop it.
+    if (s.staleChecks?.[v.id]) { edited.check = undefined; edited.placeholder = true; }
+    return edited;
   });
 }
 
@@ -266,7 +284,11 @@ export function verifierState(s: ReviewState, v: Verifier): MeterState {
 export function reward(s: ReviewState): number | null {
   if (s.serverSubmission) return s.serverSubmission.reward; // authoritative once submitted
   if (!s.benchmarkRun) return null;
-  // Gym tasks carry the authoritative real milestone verdict (M8).
+  // The SERVER-computed benchmark reward is authoritative — it is exactly what is
+  // stored and what ships in the sample. A locally-derived number could disagree
+  // with it (e.g. show 1 while a persisted check failed).
+  if (s.serverReward != null) return s.serverReward;
+  // Offline fallback only: gym tasks carry the real milestone verdict (M8).
   if (s.data.source === "gym") return s.gymResumeReward ?? s.data.gymReward ?? 0;
   return allVerifiers(s).every((v) => verifierState(s, v) === "pass") ? 1 : 0;
 }

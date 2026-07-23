@@ -221,7 +221,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
       if (sessionId) {
         await saveSuite(sessionId, verifierPayloads(state)); // persist the milestones as the human suite
         const out = await runVerifiers(sessionId, { corrected, verifiers: verifierPayloads(state), overrides });
-        dispatch({ t: "benchmarkComplete", results: out?.results ?? {} });
+        dispatch({ t: "benchmarkComplete", results: out?.results ?? {}, reward: out?.reward ?? null });
         return;
       }
       dispatch({ t: "benchmarkComplete", results: {} }); // offline — reveal only
@@ -236,7 +236,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
       await saveSuite(sessionId, verifiers);
       const out = await runVerifiers(sessionId, { corrected, verifiers, overrides });
       if (out) {
-        dispatch({ t: "benchmarkComplete", results: out.results });
+        dispatch({ t: "benchmarkComplete", results: out.results, reward: out.reward ?? null });
         return;
       }
     }

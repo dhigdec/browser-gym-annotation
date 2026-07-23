@@ -160,6 +160,12 @@ export interface ReviewState {
   gymResumeReward: number | null;
   /** server-confirmed submission (authoritative reward/kind) — set only after the
    *  submit POST succeeds, so the UI never shows a golden that wasn't written. */
+  /** The reward the SERVER computed and stored for the last benchmark. What the
+   *  annotator sees must be what actually ships. */
+  /** Verifiers whose compiled check IR was invalidated by an edit — they fail
+   *  closed rather than scoring the pre-edit condition. */
+  staleChecks: Record<string, boolean>;
+  serverReward: number | null;
   serverSubmission: { reward: number; kind: string } | null;
   /** an inline error if the submit POST failed (so it's never silently lost). */
   submitError: string | null;

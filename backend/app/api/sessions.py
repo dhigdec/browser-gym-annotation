@@ -330,6 +330,19 @@ def _run_benchmark(db: Session, s: ReviewSession, corrected: bool, overrides: se
             results[oid] = "pass"
         if applied_overrides:  # an override can only lift a fail → recompute the gate
             reward = 1 if all(r == "pass" for r in results.values()) else reward
+        # The gym verdict scores the ENVIRONMENT, but the human suite is what ships
+        # and what a lab will re-run. A verifier the annotator authored or edited
+        # must not be silently ignored: an unproven check (placeholder / no
+        # executable IR) cannot coexist with reward 1.
+        human_fail: list[str] = []
+        for v in _persisted_verifiers(db, suite):
+            if v["id"] in results:
+                continue  # a real gym milestone — already scored above
+            if v.get("placeholder") or not v.get("check"):
+                results[v["id"]] = "fail"  # unproven ⇒ fails closed
+                human_fail.append(v["id"])
+        if human_fail and reward == 1:
+            reward = 0
         db.add(BenchmarkRun(suite_id=suite.id, reward=reward, results=results, overridden=applied_overrides))
         if s.status in _OPEN:
             s.status = "benchmark_run"
