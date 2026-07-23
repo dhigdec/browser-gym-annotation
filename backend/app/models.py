@@ -50,7 +50,11 @@ class Annotator(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)  # deactivate instead of delete
     created_at: Mapped[datetime] = mapped_column(default=func.now())
 
-    sessions: Mapped[list["ReviewSession"]] = relationship(back_populates="annotator")
+    # foreign_keys is required now that review_session has a SECOND fk to annotator
+    # (disposition_by_id) — otherwise the join condition is ambiguous.
+    sessions: Mapped[list["ReviewSession"]] = relationship(
+        back_populates="annotator", foreign_keys="ReviewSession.annotator_id"
+    )
 
 
 class Task(Base):
@@ -86,8 +90,30 @@ class ReviewSession(Base):
     agent: Mapped[str] = mapped_column(String(32), default="")  # the agent whose run is under review
     # draft | steps_approved | verifiers_generated | benchmark_run | submitted
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    # DEPRECATED by the v2 model: rerun_from is superseded by
+    # TrajectoryVersion.fork_before_step_id, and reviewed_through by StepVerdict
+    # (a scalar cannot survive a re-fork, which is why the client had to clamp it).
+    # Kept nullable/defaulted so the existing flows keep working during migration.
     rerun_from: Mapped[int | None] = mapped_column(nullable=True)
     reviewed_through: Mapped[int] = mapped_column(Integer, default=0)  # granular per-step review progress
+    # --- v2: this row IS the AnnotationAttempt (one workflow record, not two) ---
+    task_revision: Mapped[int] = mapped_column(Integer, default=1)  # which revision of the task was annotated
+    # The attempt HEAD. Advanced only by an explicit, versioned selection command —
+    # never automatically by a finishing agent job (that is what makes out-of-order
+    # completions safe). use_alter breaks the review_session <-> trajectory_version cycle.
+    active_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("trajectory_version.id", ondelete="SET NULL", use_alter=True, name="fk_attempt_active_version"),
+        nullable=True, index=True,
+    )
+    revision: Mapped[int] = mapped_column(Integer, default=0)  # optimistic lock; every head change is a CAS
+    agent_call_count: Mapped[int] = mapped_column(Integer, default=0)  # rerun cap lives on the ATTEMPT so sibling branches can't bypass it
+    # Disposition is a workflow, not a boolean — it is what separates "the model
+    # failed" from "the environment is broken", which is the 85-task report's blocker.
+    disposition: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    disposition_note: Mapped[str] = mapped_column(Text, default="")
+    disposition_by_id: Mapped[UUID | None] = _fk("annotator.id", nullable=True, ondelete="SET NULL")
+    disposition_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    rework_status: Mapped[str] = mapped_column(String(16), default="")  # "" | requested | done
     # For a SYSTEM gym run produced by an annotator's correction (drive-forward),
     # the HUMAN session that triggered it. Lets a corrected re-benchmark score from
     # THAT annotator's own correction, never another annotator's — the isolation
@@ -97,7 +123,7 @@ class ReviewSession(Base):
     updated_at: Mapped[datetime] = mapped_column(default=func.now(), onupdate=func.now())
 
     task: Mapped[Task] = relationship(back_populates="sessions")
-    annotator: Mapped[Annotator | None] = relationship(back_populates="sessions")
+    annotator: Mapped[Annotator | None] = relationship(back_populates="sessions", foreign_keys=[annotator_id])
     suites: Mapped[list["VerifierSuite"]] = relationship(back_populates="session", cascade="all, delete-orphan")
     trajectories: Mapped[list["Trajectory"]] = relationship(back_populates="session", cascade="all, delete-orphan")
     branches: Mapped[list["TrajectoryBranch"]] = relationship(back_populates="session", cascade="all, delete-orphan")
@@ -141,6 +167,29 @@ class TrajectoryStep(Base):
     screenshot_url: Mapped[str] = mapped_column(Text, default="")
     reasoning: Mapped[str] = mapped_column(Text, default="")
     url_after: Mapped[str] = mapped_column(Text, default="")
+    # --- v2: the COMMITTED, replayable step contract -------------------------
+    # `idx` above stays for legacy/display only. Identity is this row's UUID; a
+    # step belongs to the VERSION that created it and carries a LOCAL suffix
+    # ordinal — the global display number is computed when flattening the parent
+    # chain, never persisted, because position changes between branches.
+    version_id: Mapped[UUID | None] = _fk("trajectory_version.id", nullable=True, ondelete="CASCADE")
+    suffix_ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    actor: Mapped[str] = mapped_column(String(8), default="agent")  # agent | human | system (a trajectory is routinely HYBRID)
+    # Structured action IR — replayable without an LLM.
+    semantic_locator: Mapped[dict] = mapped_column(JSON, default=dict)   # role/name/test-id/css candidates
+    resolved_target: Mapped[dict] = mapped_column(JSON, default=dict)    # what actually matched at dispatch
+    arguments: Mapped[dict] = mapped_column(JSON, default=dict)
+    coordinate_fallback: Mapped[dict] = mapped_column(JSON, default=dict)  # {x,y} only as a last resort
+    before_checkpoint_id: Mapped[UUID | None] = _fk("environment_checkpoint.id", nullable=True, ondelete="SET NULL")
+    after_checkpoint_id: Mapped[UUID | None] = _fk("environment_checkpoint.id", nullable=True, ondelete="SET NULL")
+    # Per-step world (previously only inside Trajectory.raw; branch steps had none).
+    world_after: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    marks_artifact_id: Mapped[UUID | None] = _fk("artifact.id", nullable=True, ondelete="SET NULL")
+    # Provenance of intent — never synthesized after the fact.
+    human_intent: Mapped[str] = mapped_column(Text, default="")      # the annotator's own "why"
+    guidance_text: Mapped[str] = mapped_column(Text, default="")     # reviewer instruction that produced this step
+    guidance_author_id: Mapped[UUID | None] = _fk("annotator.id", nullable=True, ondelete="SET NULL")
+    intervention_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
     trajectory: Mapped[Trajectory] = relationship(back_populates="steps")
 
@@ -185,6 +234,11 @@ class BenchmarkRun(Base):
     reward: Mapped[int] = mapped_column(default=0)
     results: Mapped[dict] = mapped_column(JSON, default=dict)  # per-verifier pass/fail
     overridden: Mapped[list] = mapped_column(JSON, default=list)  # verifier ids a human forced to pass
+    # --- v2 finalization binding: a score is meaningless unless it names the
+    # EXACT trajectory version + suite + end state it was computed against.
+    # Scoping by session alone cross-attributes when agent runs finish out of order.
+    trajectory_version_id: Mapped[UUID | None] = _fk("trajectory_version.id", nullable=True, ondelete="SET NULL")
+    final_checkpoint_id: Mapped[UUID | None] = _fk("environment_checkpoint.id", nullable=True, ondelete="SET NULL")
     created_at: Mapped[datetime] = mapped_column(default=func.now())
 
     suite: Mapped[VerifierSuite] = relationship(back_populates="runs")
@@ -203,6 +257,11 @@ class Submission(Base):
     submitted_with_override: Mapped[bool] = mapped_column(Boolean, default=False)
     override_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     accepted: Mapped[bool] = mapped_column(Boolean, default=False)  # a reviewer adjudicated this the accepted golden (QA)
+    # --- v2 finalization binding: the shipped sample names exactly what was
+    # approved, scored and against which task revision.
+    task_revision: Mapped[int] = mapped_column(Integer, default=1)
+    approved_trajectory_version_id: Mapped[UUID | None] = _fk("trajectory_version.id", nullable=True, ondelete="SET NULL")
+    benchmark_run_id: Mapped[UUID | None] = _fk("benchmark_run.id", nullable=True, ondelete="SET NULL")
     # The deliverable frozen AT SUBMIT TIME (Cluster A). export.build_sample reads
     # this instead of the live latest-suite/latest-run, so a post-submit mutation
     # can never rewrite what was actually reviewed and scored.
@@ -239,4 +298,178 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(String(64), index=True)
     target: Mapped[str] = mapped_column(String(255), default="")
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=func.now())
+
+
+# ---------------------------------------------------------------------------
+# Live-workspace / versioned-trajectory model (Live Browser Gym v2, Phase 1).
+#
+# Everything below is ADDITIVE and nullable so the existing fixture + gym flows
+# keep working while the new model lands. The design contracts are in the plan:
+#   · a checkpoint is a COMPLETE restorable browser+world state (not just world)
+#   · raw exploration (InteractionEvent) is separate from committed steps
+#   · a version stores only its SUFFIX; the prefix resolves through parents, and
+#     inherited steps are NEVER copied to new ids (so verdicts survive a re-fork)
+#   · content is immutable; lifecycle STATUS transitions under optimistic locking
+# ---------------------------------------------------------------------------
+
+
+class Artifact(Base):
+    """A large binary/JSON blob held outside the row (screenshot, DOM, AX, SoM,
+    video). Kept as a table so checkpoints/steps reference an id, and storage can
+    move to object storage without touching the referencing schema."""
+
+    __tablename__ = "artifact"
+    id: Mapped[UUID] = _pk()
+    kind: Mapped[str] = mapped_column(String(16), index=True)  # screenshot | dom | ax | som | video
+    uri: Mapped[str] = mapped_column(Text)  # file path now; object-storage URI later
+    sha256: Mapped[str] = mapped_column(String(64), default="", index=True)
+    bytes: Mapped[int] = mapped_column(Integer, default=0)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=func.now())
+
+
+class EnvironmentCheckpoint(Base):
+    """A COMPLETE restorable point-in-time: gym world + backend state + browser
+    context (tabs, cookies, storage, scroll, viewport) + evidence artifacts +
+    hashes. Restoration = reset(task_revision, seed) → replay accepted prefix →
+    compare hashes after every action → abort on divergence; a serialized load is
+    an optimization, never the correctness story."""
+
+    __tablename__ = "environment_checkpoint"
+    id: Mapped[UUID] = _pk()
+    attempt_id: Mapped[UUID | None] = _fk("review_session.id", nullable=True, ondelete="CASCADE")
+    # --- gym / world ---
+    world: Mapped[dict] = mapped_column(JSON, default=dict)            # full multi-app world
+    backend_state: Mapped[dict] = mapped_column(JSON, default=dict)    # /_harness/state summary
+    step_clock: Mapped[int] = mapped_column(Integer, default=0)        # deterministic clock = step counter
+    # --- browser context ---
+    url: Mapped[str] = mapped_column(Text, default="")
+    active_tab: Mapped[str] = mapped_column(String(64), default="")
+    tabs: Mapped[list] = mapped_column(JSON, default=list)             # FULL tab list, not just the active one
+    cookies: Mapped[list] = mapped_column(JSON, default=list)
+    storage_state: Mapped[dict] = mapped_column(JSON, default=dict)    # Playwright storage_state
+    local_storage: Mapped[dict] = mapped_column(JSON, default=dict)
+    viewport: Mapped[dict] = mapped_column(JSON, default=dict)         # {width,height}
+    device_pixel_ratio: Mapped[float] = mapped_column(Float, default=1.0)
+    scroll: Mapped[dict] = mapped_column(JSON, default=dict)           # {x,y}
+    # --- evidence ---
+    screenshot_artifact_id: Mapped[UUID | None] = _fk("artifact.id", nullable=True, ondelete="SET NULL")
+    dom_artifact_id: Mapped[UUID | None] = _fk("artifact.id", nullable=True, ondelete="SET NULL")
+    som_artifact_id: Mapped[UUID | None] = _fk("artifact.id", nullable=True, ondelete="SET NULL")
+    # --- integrity ---
+    world_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    dom_hash: Mapped[str] = mapped_column(String(64), default="")
+    environment_image_digest: Mapped[str] = mapped_column(String(96), default="")
+    created_at: Mapped[datetime] = mapped_column(default=func.now())
+
+
+class TrajectoryVersion(Base):
+    """One version in an attempt's lineage: v1 is the canonical agent run, each
+    later version is a correction or a human-authored suffix. Stores ONLY its own
+    suffix steps — the prefix resolves through `parent_version_id`."""
+
+    __tablename__ = "trajectory_version"
+    __table_args__ = (UniqueConstraint("attempt_id", "version_no", name="uq_version_per_attempt"),)
+
+    id: Mapped[UUID] = _pk()
+    attempt_id: Mapped[UUID] = _fk("review_session.id")
+    parent_version_id: Mapped[UUID | None] = _fk("trajectory_version.id", nullable=True, ondelete="SET NULL")
+    version_no: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(24), default="agent_run")  # agent_run | agent_correction | human_manual
+    # v1 binds the EXACT canonical base run (never a "newest/oldest" heuristic).
+    base_trajectory_id: Mapped[UUID | None] = _fk("trajectory.id", nullable=True, ondelete="SET NULL")
+    # Fork BEFORE the rejected step — the rejected step must not appear in the child.
+    fork_before_step_id: Mapped[UUID | None] = _fk("trajectory_step.id", nullable=True, ondelete="SET NULL")
+    fork_checkpoint_id: Mapped[UUID | None] = _fk("environment_checkpoint.id", nullable=True, ondelete="SET NULL")
+    environment_image_digest: Mapped[str] = mapped_column(String(96), default="")
+    producer: Mapped[str] = mapped_column(String(64), default="")       # agent name / "human"
+    model_config_json: Mapped[dict] = mapped_column(JSON, default=dict)  # model, temperature, etc.
+    created_by_id: Mapped[UUID | None] = _fk("annotator.id", nullable=True, ondelete="SET NULL")
+    # Content is immutable; STATUS transitions under optimistic concurrency.
+    status: Mapped[str] = mapped_column(String(16), default="candidate", index=True)  # candidate|approved|rejected|published
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(default=func.now())
+
+
+class InteractionEvent(Base):
+    """Append-only RAW human/agent interaction. Exploration lives here and never
+    pollutes the golden; a committed step points back at the events it came from.
+    This — not the server's route-level action_log — is the authoritative action
+    source, because backend logs miss navigation/scroll/focus/no-op clicks."""
+
+    __tablename__ = "interaction_event"
+    id: Mapped[UUID] = _pk()
+    attempt_id: Mapped[UUID] = _fk("review_session.id")
+    workspace_lease_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    seq: Mapped[int] = mapped_column(Integer, index=True)  # monotonic per attempt
+    kind: Mapped[str] = mapped_column(String(24), index=True)  # click|key|scroll|navigate|popup|tab|backend_effect
+    actor: Mapped[str] = mapped_column(String(8), default="human")  # human | agent | system
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    target: Mapped[dict] = mapped_column(JSON, default=dict)  # locator candidates + SoM mark captured BEFORE dispatch
+    url: Mapped[str] = mapped_column(Text, default="")
+    tab: Mapped[str] = mapped_column(String(64), default="")
+    committed_step_id: Mapped[UUID | None] = _fk("trajectory_step.id", nullable=True, ondelete="SET NULL")
+    occurred_at: Mapped[datetime] = mapped_column(default=func.now())
+
+
+class StepVerdict(Base):
+    """Per-step review verdict keyed by the step's STABLE UUID (never a positional
+    index), so progress survives a re-fork instead of being clamped."""
+
+    __tablename__ = "step_verdict"
+    __table_args__ = (UniqueConstraint("attempt_id", "step_id", name="uq_verdict_per_step"),)
+
+    id: Mapped[UUID] = _pk()
+    attempt_id: Mapped[UUID] = _fk("review_session.id")
+    step_id: Mapped[UUID] = _fk("trajectory_step.id")
+    verdict: Mapped[str] = mapped_column(String(16), default="pending", index=True)  # pending|verified|rejected
+    note: Mapped[str] = mapped_column(Text, default="")
+    annotator_id: Mapped[UUID | None] = _fk("annotator.id", nullable=True, ondelete="SET NULL")
+    reviewer_id: Mapped[UUID | None] = _fk("annotator.id", nullable=True, ondelete="SET NULL")
+    created_at: Mapped[datetime] = mapped_column(default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(default=func.now(), onupdate=func.now())
+
+
+class WorkspaceLease(Base):
+    """An EPHEMERAL live workspace (gym process + Chromium) leased to an attempt.
+    Durable ReviewSession != ephemeral lease. Persisted (not just in memory) so a
+    backend restart can reconcile or reprovision. TTL is INACTIVITY-based."""
+
+    __tablename__ = "workspace_lease"
+    id: Mapped[UUID] = _pk()
+    attempt_id: Mapped[UUID] = _fk("review_session.id")
+    annotator_id: Mapped[UUID | None] = _fk("annotator.id", nullable=True, ondelete="SET NULL")
+    runtime_kind: Mapped[str] = mapped_column(String(24), default="local_process")  # local_process | kubernetes
+    endpoint: Mapped[str] = mapped_column(Text, default="")      # http://127.0.0.1:PORT
+    external_ref: Mapped[str] = mapped_column(Text, default="")  # pid / pod name
+    status: Mapped[str] = mapped_column(String(16), default="provisioning", index=True)  # provisioning|ready|expired|terminated
+    environment_image_digest: Mapped[str] = mapped_column(String(96), default="")
+    last_active_at: Mapped[datetime] = mapped_column(default=func.now())
+    expires_at: Mapped[datetime | None] = mapped_column(nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(default=func.now())
+    terminated_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+
+class AgentRunJob(Base):
+    """A batch agent branch run, bound to the EXACT source it forked from. On
+    completion it creates a CANDIDATE child version and never auto-advances the
+    attempt head — selection is a separate versioned command, which is what makes
+    out-of-order completions safe."""
+
+    __tablename__ = "agent_run_job"
+    id: Mapped[UUID] = _pk()
+    attempt_id: Mapped[UUID] = _fk("review_session.id")
+    source_version_id: Mapped[UUID | None] = _fk("trajectory_version.id", nullable=True, ondelete="SET NULL")
+    source_checkpoint_id: Mapped[UUID | None] = _fk("environment_checkpoint.id", nullable=True, ondelete="SET NULL")
+    expected_attempt_revision: Mapped[int] = mapped_column(Integer, default=0)
+    result_version_id: Mapped[UUID | None] = _fk("trajectory_version.id", nullable=True, ondelete="SET NULL")
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)  # queued|running|done|error|cancelled
+    idempotency_key: Mapped[str] = mapped_column(String(80), default="", index=True)
+    owner: Mapped[str] = mapped_column(String(64), default="")  # worker id, for stale-job recovery
+    heartbeat_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    provider_request_started_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    provider_request_id: Mapped[str] = mapped_column(String(128), default="")
+    counts_against_cap: Mapped[bool] = mapped_column(Boolean, default=True)  # false for confirmed infra failures
+    error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(default=func.now())
