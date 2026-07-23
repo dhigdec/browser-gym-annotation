@@ -52,19 +52,28 @@ Probed end-to-end against six real archived multi-app runs and the live gym:
 | task | actions executed | world reconstructed byte-identically |
 |---|---|---|
 | M40/bogus_pricematch | 3 / 3 | **3 / 3** |
+| M37/false_overcharge | 13 / 13 | **13 / 13** |
+| M70/mixed_basket_two_redirects | 11 / 14 | **13 / 14** |
 | M47/phantom_duplicate | 11 / 11 | **10 / 11** |
-| M70/mixed_basket_two_redirects | 10 / 14 | **13 / 14** |
-| M75/stale_gift_message | 4 / 8 | **7 / 8** |
+| M75/stale_gift_message | 6 / 8 | **7 / 8** |
 | M57/birthday_errand | 17 / 17 | 4 / 17 |
-| M37/false_overcharge | 12 / 13 | 0 / 13 |
-| **total** | **57 / 66** | **37 / 66** |
+| **total** | **61 / 66 (92%)** | **50 / 66 (75%)** |
 
-The replay protocol that works is: execute the action, then
-`POST /_harness/verify {url, step: i}` — which is what sets the step counter
-(`server/main.py`, `s.step = req.step`) — then read the world. Omitting the
-verify call was why an early probe reconstructed only the first step.
+The replay protocol that works:
 
-Two bugs were found this way, both fixed:
+1. open the browser at the run's **recorded `initial_url`**, not the app root
+2. execute the action
+3. `POST /_harness/verify {url, step: i}` — this is what sets the step counter
+   (`server/main.py`, `s.step = req.step`)
+4. read the world
+
+Each of those was learned by getting it wrong. Omitting the verify call
+reconstructed only the first step. Starting at the app root instead of
+`initial_url` cost M37 every single step — its first click targets an element
+that only exists on `/mail`, so the failure cascaded through all thirteen; with
+the right start URL it is 13/13.
+
+Two real bugs were found this way, both fixed:
 
 - **`int` vs `float` in the world hash** (`ffbf710`). Four of the five leaves
   differing on M40 were `0` vs `0.0` — the same money, serialized differently
@@ -77,18 +86,20 @@ Two bugs were found this way, both fixed:
 
 ## Known gaps
 
-Two residual causes, each well characterised:
+One systemic cause remains, plus ordinary per-task locator drift.
 
-1. **A single early failure cascades.** M37 scores 0/13 because its *first*
-   click does not resolve; every downstream state is then legitimately wrong.
-   Task-level, not systemic — fixing one locator would likely recover all 13.
-2. **Scheduled-event tasks need the clock advanced.** M57 executes all 17
-   actions yet diverges, which is the signature of a task whose async events
-   fire on the deterministic clock. `harness/runner.py:951` ticks with
-   `step = len(trajectory.steps)` at the *start* of each turn. Adding that tick
-   unconditionally made M40 *worse* (3/3 → 1/3), so the rule is conditional on
-   the task having a schedule and needs deriving from an instrumented live run
-   rather than inferred from archived data.
+**Scheduled-event tasks need the clock advanced.** M57 executes all 17 actions
+yet reconstructs only 4 worlds — the signature of a task whose async events fire
+on the deterministic clock. `harness/runner.py:951` ticks with
+`step = len(trajectory.steps)` at the *start* of each turn. Adding that tick
+unconditionally made M40 *worse* (3/3 → 1/3), so the rule is conditional on the
+task having a schedule, and it needs deriving from an instrumented live run
+rather than inferred from archived data.
+
+The other 5 unmatched steps across the remaining tasks are individual actions
+that no longer resolve (2 submits and a click on M70, a fill and a submit on
+M75). Those are per-task, not systemic — and the backfill skips what does not
+match rather than guessing.
 
 **Deliberately not done:** stripping the clock from the world hash. It would make
 the numbers match today and destroy the guard — *when* an async email arrives is
