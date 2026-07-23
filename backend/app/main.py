@@ -1,12 +1,13 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app import models  # noqa: F401 — register ORM models on Base
+from app.auth import current_annotator
 from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
 from app.api.export import router as export_router
@@ -30,8 +31,28 @@ def _db_ok() -> bool:
         return False
 
 
+_INSECURE_SECRET = "dev-insecure-auth-secret-change-me"
+
+
+def _assert_prod_safe() -> None:
+    """Fail CLOSED at boot in production rather than serving with forgeable
+    sessions. With the shipped default secret, anyone can mint a valid token for
+    any account, which makes every route gate meaningless."""
+    if settings.env != "prod":
+        return
+    problems = []
+    if settings.auth_secret == _INSECURE_SECRET or not settings.auth_secret.strip():
+        problems.append("AUTH_SECRET is unset or still the shipped default (session tokens would be forgeable)")
+    if settings.auto_create_all:
+        problems.append("auto_create_all must be false in prod (use `alembic upgrade head`)")
+    if problems:
+        raise RuntimeError("refusing to start in prod: " + "; ".join(problems))
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Fail closed BEFORE serving a single request when prod is misconfigured.
+    _assert_prod_safe()
     # Dev bootstrap: create tables if the DB is reachable. Never hard-fail —
     # the API still serves fixtures if Postgres is down (Alembic replaces this
     # create_all in a later milestone).
@@ -78,10 +99,16 @@ def health() -> dict:
     return {"status": "ok" if ok else "degraded", "db": "up" if ok else "down", "env": settings.env}
 
 
-app.include_router(auth_router)
-app.include_router(tasks_router)
-app.include_router(sessions_router)
-app.include_router(gym_router)
-app.include_router(qa_router)
-app.include_router(export_router)
-app.include_router(admin_router)
+# Authentication is enforced at the ROUTER level, not per-endpoint, so a new route
+# is protected by default and cannot be forgotten. Only /health and the auth router
+# (login/register) are public. Previously just sessions.py carried the dependency,
+# leaving the task catalog, gym job triggers, QA data and the whole dataset export
+# readable — and runnable — by anonymous callers.
+_AUTHED = [Depends(current_annotator)]
+app.include_router(auth_router)                              # public: login / register
+app.include_router(tasks_router, dependencies=_AUTHED)
+app.include_router(sessions_router, dependencies=_AUTHED)
+app.include_router(gym_router, dependencies=_AUTHED)
+app.include_router(qa_router, dependencies=_AUTHED)
+app.include_router(export_router, dependencies=_AUTHED)
+app.include_router(admin_router, dependencies=_AUTHED)

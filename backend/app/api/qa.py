@@ -11,7 +11,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.auth import require_reviewer
 from app.db import get_db
+from app.models import Annotator
 
 router = APIRouter(prefix="/api/qa", tags=["qa"])
 
@@ -110,7 +112,9 @@ class AdjudicateBody(BaseModel):
 
 
 @router.post("/tasks/{external_id:path}/adjudicate")
-def qa_adjudicate(external_id: str, body: AdjudicateBody, db: Session = Depends(get_db)) -> dict:
+def qa_adjudicate(external_id: str, body: AdjudicateBody,
+                  current: Annotator = Depends(require_reviewer),
+                  db: Session = Depends(get_db)) -> dict:
     """A reviewer accepts one annotator's submission as the golden for this task
     (clears the flag on the others)."""
     task = db.scalar(select(models.Task).where(models.Task.external_id == external_id))

@@ -29,10 +29,10 @@ def test_export_sample_is_a_complete_golden_bundle(client, monkeypatch):
     assert b["submission"]["reward"] == 1 and b["submission"]["kind"] == "golden"
 
 
-def test_export_dataset_jsonl(client, monkeypatch):
+def test_export_dataset_jsonl(client, reviewer_client, monkeypatch):
     monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
     _golden(client)
-    r = client.get("/api/export/dataset.jsonl")
+    r = reviewer_client.get("/api/export/dataset.jsonl")
     assert r.status_code == 200
     assert "application/x-ndjson" in r.headers["content-type"]
     lines = [ln for ln in r.text.strip().split("\n") if ln]
@@ -41,13 +41,13 @@ def test_export_dataset_jsonl(client, monkeypatch):
     assert {"task", "initial_state", "golden_trajectory", "verifiers", "reward"} <= set(rec)
 
 
-def test_list_samples_and_accepted_filter(client, monkeypatch):
+def test_list_samples_and_accepted_filter(client, reviewer_client, monkeypatch):
     monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
     sid = _golden(client)
     assert client.get("/api/export/samples").json()["count"] >= 1
     # nothing accepted yet
     assert client.get("/api/export/samples?accepted=true").json()["count"] == 0
-    client.post("/api/qa/tasks/GYM-2041/adjudicate", json={"sessionId": sid})
+    reviewer_client.post("/api/qa/tasks/GYM-2041/adjudicate", json={"sessionId": sid})
     assert client.get("/api/export/samples?accepted=true").json()["count"] == 1
 
 

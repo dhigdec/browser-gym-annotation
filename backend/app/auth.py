@@ -117,3 +117,12 @@ def current_annotator(request: Request, db: Session = Depends(get_db)) -> Annota
     if ann is None:
         raise HTTPException(status_code=401, detail="unknown user")
     return ann
+
+
+def require_reviewer(current: "Annotator" = Depends(current_annotator)) -> "Annotator":
+    """Privileged surfaces (QA adjudication, dataset-wide export) must not be open
+    to every annotator: adjudication decides which sample ships, and the dataset
+    export is the whole deliverable."""
+    if current.role not in ("admin", "reviewer"):
+        raise HTTPException(status_code=403, detail="requires the reviewer or admin role")
+    return current

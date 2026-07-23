@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.auth import require_reviewer
 from app.db import get_db
 
 router = APIRouter(prefix="/api/export", tags=["export"])
@@ -187,7 +188,9 @@ def export_sample(session_id: UUID, db: Session = Depends(get_db)) -> dict:
 
 
 @router.get("/dataset.jsonl")
-def export_dataset(accepted: bool = False, db: Session = Depends(get_db)) -> Response:
+def export_dataset(accepted: bool = False,
+                   current: models.Annotator = Depends(require_reviewer),
+                   db: Session = Depends(get_db)) -> Response:
     """The whole golden dataset as JSONL — one deliverable sample bundle per line."""
     import json
 

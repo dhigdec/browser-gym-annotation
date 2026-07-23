@@ -91,6 +91,27 @@ def client_for(_engine, _session_factory):
 
 
 @pytest.fixture()
+def reviewer_client(_engine, _session_factory):
+    """A TestClient authenticated as a REVIEWER — QA adjudication and the
+    dataset-wide export are privileged surfaces, not open to every annotator."""
+
+    def override_get_db():
+        db = _session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    email = "reviewer@deccan.ai"
+    with TestClient(app) as c:
+        _ensure_annotator(_session_factory, email, "reviewer")
+        c.cookies.set(settings.auth_cookie, authmod.make_token(email))
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
 def anon_client(_engine, _session_factory):
     """An UNauthenticated client — for asserting protected routes 401."""
     def override_get_db():

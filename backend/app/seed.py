@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app import auth, gym_client, models
 from app.api.tasks import _TASKS
+from app.config import settings
 
 # Five dummy annotator accounts to test the multi-annotator flow (login-only; open
 # self-registration is off). Shared dev password below — TEST ACCOUNTS ONLY. One
@@ -26,7 +27,13 @@ _DUMMY_ANNOTATORS = [
 
 def seed_annotators(db: Session) -> int:
     """Ensure the 5 dummy test accounts exist (idempotent). Sets a password only
-    if one isn't already set, so re-seeding never resets a changed password."""
+    if one isn't already set, so re-seeding never resets a changed password.
+
+    NEVER runs in production: these accounts share one publicly-known dev password,
+    so seeding them into a real deployment hands out working logins — one of them a
+    REVIEWER, who can adjudicate which samples ship and pull the whole dataset."""
+    if settings.env == "prod":
+        return 0
     created = 0
     for email, name, hue, role in _DUMMY_ANNOTATORS:
         a = db.scalar(select(models.Annotator).where(models.Annotator.email == email))

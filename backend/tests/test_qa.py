@@ -14,7 +14,7 @@ def _submit(c, task, corrected):
     return sid
 
 
-def test_qa_agreement_and_adjudication(client_for, monkeypatch):
+def test_qa_agreement_and_adjudication(client_for, reviewer_client, monkeypatch):
     monkeypatch.setattr("app.agent.settings.anthropic_api_key", "")
     ca, cb, cc = client_for("a@x.io"), client_for("b@x.io"), client_for("c@x.io")
     a = _submit(ca, "GYM-2041", True)
@@ -26,7 +26,7 @@ def test_qa_agreement_and_adjudication(client_for, monkeypatch):
     assert row["majorityReward"] == 1 and row["disputed"] is True
     assert row["agreement"] == round(2 / 3, 3)
 
-    r = ca.post("/api/qa/tasks/GYM-2041/adjudicate", json={"sessionId": a, "reviewer": "rev@x.io"})
+    r = reviewer_client.post("/api/qa/tasks/GYM-2041/adjudicate", json={"sessionId": a, "reviewer": "rev@x.io"})
     assert r.status_code == 200
     subs = ca.get("/api/qa/tasks/GYM-2041/submissions").json()["submissions"]
     accepted = [s for s in subs if s["accepted"]]
