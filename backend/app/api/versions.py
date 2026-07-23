@@ -15,10 +15,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import models, versions
+from app import agent_runs, checkpoints, gym_client, jobs, models, recorder, replay, versions, workspace
 from app.api.sessions import _owned_session
 from app.auth import current_annotator
-from app.db import get_db
+from app.config import settings
+from app.db import SessionLocal, get_db
 
 router = APIRouter(prefix="/api", tags=["versions"])
 
@@ -215,6 +216,271 @@ def ensure_baseline(
     v1 = versions.ensure_root(db, s, base)
     db.commit()
     return _describe(db, v1, s.active_version_id)
+
+
+# --------------------------------------------------------------------------- agent handoff
+class AgentRunBody(BaseModel):
+    parentVersionId: UUID
+    stepId: UUID
+    mode: str = "before"
+    correction: str = ""
+    agent: str = "llm"
+    idempotencyKey: str = ""
+
+
+@router.post("/sessions/{session_id}/versions/agent-run")
+def start_agent_run(
+    session_id: UUID, body: AgentRunBody,
+    current: models.Annotator = Depends(current_annotator), db: Session = Depends(get_db),
+) -> dict:
+    """Hand a branch to a batch agent.
+
+    The worker runs in its OWN gym process cloned from the fork checkpoint, so it
+    can never reset the world out from under the annotator's live session. The
+    result arrives as a CANDIDATE the human then chooses — they do not watch a
+    batch agent drive their browser.
+    """
+    s = _owned_session(db, session_id, current)
+    parent = _version(db, s, body.parentVersionId)
+    step = _step(db, s, body.stepId)
+    task = db.get(models.Task, s.task_id)
+    try:
+        job, child = agent_runs.enqueue(
+            db, attempt=s, source_version=parent, step=step, mode=body.mode,
+            correction=body.correction, agent=body.agent, created_by_id=current.id,
+            idempotency_key=body.idempotencyKey, max_calls=settings.agent_run_cap or None,
+        )
+    except agent_runs.CapExceeded as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except versions.LineageError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    if job.status != agent_runs.QUEUED:  # an idempotent replay of a finished run
+        db.commit()
+        return {"jobId": str(job.id), "status": job.status,
+                "versionId": str(child.id) if child else None, "replayed": True}
+
+    db.add(models.AuditLog(
+        session_id=s.id, actor=current.email, action="version.agent_run", target=str(child.id),
+        meta={"parent": str(parent.id), "mode": body.mode, "correction": bool(body.correction)},
+    ))
+    db.commit()
+    bg = jobs.store.submit(
+        "agent-branch", _agent_branch_job, str(job.id), str(s.id), str(child.id),
+        task.external_id if task else "", s.seed, body.agent, body.correction, str(current.id),
+    )
+    return {"jobId": bg.id, "runId": str(job.id), "versionId": str(child.id), "status": "queued"}
+
+
+def _agent_branch_job(
+    job_id: str, attempt_id: str, child_id: str, task_external_id: str,
+    seed: int, agent: str, correction: str, author_id: str,
+) -> dict:
+    """Background: restore the fork checkpoint into an ISOLATED worker, drive the
+    agent forward under the correction, and persist the steps as the candidate's
+    suffix. Never touches the attempt head."""
+    from app.api.gym import _agent_workspace
+
+    with SessionLocal() as db:
+        job = db.get(models.AgentRunJob, UUID(job_id))
+        attempt = db.get(models.ReviewSession, UUID(attempt_id))
+        child = db.get(models.TrajectoryVersion, UUID(child_id))
+        cp = db.get(models.EnvironmentCheckpoint, job.source_checkpoint_id) if job.source_checkpoint_id else None
+        start_world = dict(cp.world or {}) if cp is not None else {}
+        start_url = cp.url if cp is not None else "/"
+        start_step = cp.step_clock if cp is not None else None
+        agent_runs.start(db, job, owner="api")
+        db.commit()
+
+    try:
+        with _agent_workspace(attempt_id) as gym:
+            r = gym.resume_run(task_external_id, seed, start_world, start_url, start_step, agent, correction=correction)
+            post_world = gym.world() if r is not None else None
+    except Exception as exc:  # noqa: BLE001
+        with SessionLocal() as db:
+            agent_runs.fail(db, db.get(models.AgentRunJob, UUID(job_id)), f"{type(exc).__name__}: {exc}", infrastructure=True)
+            db.commit()
+        raise jobs.JobFailure("the branch worker could not be driven") from exc
+
+    steps = ((r or {}).get("trajectory") or {}).get("steps") or []
+    with SessionLocal() as db:
+        job = db.get(models.AgentRunJob, UUID(job_id))
+        attempt = db.get(models.ReviewSession, UUID(attempt_id))
+        child = db.get(models.TrajectoryVersion, UUID(child_id))
+        if r is None:
+            # Unreachable gym is OURS, not the annotator's — don't burn a run.
+            agent_runs.fail(db, job, "gym unreachable or resume failed", infrastructure=True)
+            db.commit()
+            raise jobs.JobFailure("gym unreachable or resume failed")
+        traj = _attempt_trajectory(db, attempt)
+        agent_runs.complete(
+            db, job, attempt=attempt, child=child, steps=steps, trajectory_id=traj.id,
+            guidance=correction, guidance_author_id=UUID(author_id) if author_id else None,
+        )
+        out = {"versionId": str(child.id), "steps": len(steps),
+               "worldHash": checkpoints.hash_world(post_world)}
+        db.commit()
+    return out
+
+
+@router.get("/sessions/{session_id}/runs")
+def list_runs(
+    session_id: UUID,
+    current: models.Annotator = Depends(current_annotator), db: Session = Depends(get_db),
+) -> dict:
+    s = _owned_session(db, session_id, current)
+    rows = db.scalars(
+        select(models.AgentRunJob)
+        .where(models.AgentRunJob.attempt_id == s.id)
+        .order_by(models.AgentRunJob.created_at.desc())
+    ).all()
+    return {"agentCallCount": s.agent_call_count, "cap": settings.agent_run_cap or None, "runs": [
+        {"id": str(j.id), "status": j.status, "sourceVersionId": str(j.source_version_id) if j.source_version_id else None,
+         "resultVersionId": str(j.result_version_id) if j.result_version_id else None,
+         "countsAgainstCap": j.counts_against_cap, "error": j.error,
+         "createdAt": j.created_at.isoformat()}
+        for j in rows
+    ]}
+
+
+# --------------------------------------------------------------------------- manual capture
+class EventBody(BaseModel):
+    kind: str
+    payload: dict = {}
+    target: dict = {}
+    url: str = ""
+    tab: str = ""
+
+
+@router.post("/sessions/{session_id}/events")
+def record_events(
+    session_id: UUID, body: list[EventBody],
+    current: models.Annotator = Depends(current_annotator), db: Session = Depends(get_db),
+) -> dict:
+    """Append raw interactions. Exploration is recorded here and NEVER becomes a
+    step on its own — that separation is what lets an annotator look around
+    freely without polluting the golden."""
+    s = _owned_session(db, session_id, current)
+    for e in body:
+        recorder.record_event(
+            db, attempt_id=s.id, kind=e.kind, payload=e.payload,
+            target=e.target, url=e.url, tab=e.tab, actor="human",
+        )
+    db.commit()
+    return {"recorded": len(body)}
+
+
+@router.get("/sessions/{session_id}/actions")
+def candidate_actions(
+    session_id: UUID,
+    current: models.Annotator = Depends(current_annotator), db: Session = Depends(get_db),
+) -> dict:
+    """Raw events folded into candidate ACTIONS (keystrokes → one fill, press +
+    release → one click, automatic scrolls dropped). The human picks from these;
+    nothing is committed automatically."""
+    s = _owned_session(db, session_id, current)
+    acts = recorder.candidate_actions(db, s.id)
+    return {"actions": [
+        {
+            "sources": a.get("sources", []),
+            "kind": a.get("kind"),
+            "locator": recorder.semantic_locator(a.get("target")),
+            "args": a.get("payload") or {},
+            "url": a.get("url", ""),
+        }
+        for a in acts
+    ]}
+
+
+class CommitBody(BaseModel):
+    actions: list[dict]          # the sequence the human chose to commit
+    liveSessionId: str           # the live browser it is validated against
+    ticket: str
+    intents: list[str] = []      # per-action "why", authored by the human
+    dryRun: bool = False
+
+
+@router.post("/sessions/{session_id}/versions/{version_id}/commit")
+def commit_actions(
+    session_id: UUID, version_id: UUID, body: CommitBody,
+    current: models.Annotator = Depends(current_annotator), db: Session = Depends(get_db),
+) -> dict:
+    """Validate a proposed sequence by REPLAY, then append it to the version.
+
+    A proposal is a claim, not a fact: it routinely depends on state the
+    exploration created and the commit discarded. Replay from the branch's
+    starting checkpoint is what turns it into a fact — and a sequence that fails
+    is rejected outright rather than committed with a warning, because a golden
+    that "mostly replays" ships as ground truth and then doesn't reproduce.
+    """
+    s = _owned_session(db, session_id, current)
+    v = _version(db, s, version_id)
+    if not body.actions:
+        raise HTTPException(status_code=422, detail="nothing to commit")
+
+    endpoint = workspace.endpoint_for(db, s.id)
+    live = gym_client.LiveBrowserClient(
+        base_url=settings.live_browser_url, session_id=body.liveSessionId, ticket=body.ticket, gym=endpoint,
+    )
+    start = db.get(models.EnvironmentCheckpoint, v.fork_checkpoint_id) if v.fork_checkpoint_id else None
+    task = db.get(models.Task, s.task_id)
+    try:
+        result = replay.restore_and_replay(
+            start, body.actions, live, endpoint,
+            task_id=task.external_id if task else "", seed=s.seed,
+            strict=not body.dryRun,
+        )
+    except replay.ReplayRejected as exc:
+        raise HTTPException(status_code=422, detail={
+            "error": "the committed sequence does not replay", "at": exc.at, "reason": exc.reason,
+        }) from exc
+    except checkpoints.DivergenceError as exc:
+        raise HTTPException(status_code=409, detail=f"could not restore the branch start: {exc}") from exc
+
+    if body.dryRun or not result.ok:
+        return {"ok": result.ok, "rejectedAt": result.rejected_at, "reason": result.reason,
+                "steps": result.steps, "committed": 0}
+
+    own = _attempt_trajectory(db, s)
+    made = []
+    for i, (a, outcome) in enumerate(zip(body.actions, result.steps)):
+        st = versions.append_step(
+            db, v, trajectory_id=own.id, actor="human",
+            action_type=a.get("kind", ""),
+            description=a.get("description", "") or f"{a.get('kind','')} {(a.get('locator') or {}).get('testId','')}".strip(),
+            semantic_locator=a.get("locator") or {},
+            resolved_target=outcome.get("resolved") or {},
+            arguments=a.get("args") or {},
+            url_after=(outcome.get("resolved") or {}).get("url", ""),
+            human_intent=body.intents[i] if i < len(body.intents) else "",
+        )
+        made.append(st)
+    # The end state is evidence: without it the next fork has nothing to start from.
+    if result.final_world is not None and made:
+        cp = checkpoints.capture(db, attempt_id=s.id, world=result.final_world, step_clock=len(made))
+        made[-1].after_checkpoint_id = cp.id
+    db.add(models.AuditLog(
+        session_id=s.id, actor=current.email, action="version.commit", target=str(v.id),
+        meta={"committed": len(made), "versionNo": v.version_no},
+    ))
+    db.commit()
+    return {"ok": True, "committed": len(made), "versionId": str(v.id),
+            "steps": versions.flat_view(db, v)}
+
+
+def _attempt_trajectory(db: Session, s: models.ReviewSession) -> models.Trajectory:
+    """The attempt's own trajectory row — human-authored steps hang off it rather
+    than off the shared canonical gym run."""
+    t = db.scalar(
+        select(models.Trajectory)
+        .where(models.Trajectory.session_id == s.id)
+        .order_by(models.Trajectory.created_at.asc())
+    )
+    if t is None:
+        t = models.Trajectory(session_id=s.id, agent="human", seed=s.seed, source="manual")
+        db.add(t)
+        db.flush()
+    return t
 
 
 def _canonical_gym_trajectory(db: Session, s: models.ReviewSession) -> models.Trajectory | None:

@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     workspace_idle_ttl_minutes: int = 75       # INACTIVITY-based; extended by human control or a running job
     workspace_max_per_annotator: int = 2       # a human workspace + one agent branch worker
     gym_image_digest: str = ""                 # environment version stamped onto checkpoints/versions
+    # The live browser service (CDP screencast + structured actions). A separate
+    # process from the gym on purpose: the gym owns world state, this owns a
+    # browser, and neither imports the other.
+    live_browser_url: str = "http://localhost:8877"
+    # Rerun cap. 0 = OFF, which is the only safe default until manual capture has
+    # passed E2E — capping reruns before an annotator can finish a task by hand
+    # would strand them with no way forward.
+    agent_run_cap: int = 0
 
     env: str = "dev"
 
