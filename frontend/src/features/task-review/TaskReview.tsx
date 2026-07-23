@@ -127,6 +127,11 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
   const [autogen, setAutogen] = useState<null | "queued" | "running">(null);
   const [autogenResult, setAutogenResult] = useState<AutogenResult | null>(null);
   const [editingState, setEditingState] = useState(false);
+  // The LIVE resume context. Each drive-forward returns the world it ended in, and
+  // we adopt it — so successive corrections COMPOUND (round N+1 continues from where
+  // round N got to) instead of re-anchoring to the original run's end-state. That's
+  // what lets an annotator iteratively steer the agent to the target.
+  const [liveResume, setLiveResume] = useState(data.gymResume);
 
   useEffect(() => {
     if (!state.playing) return;
@@ -392,7 +397,11 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
                 // annotator re-does the pipeline (re-approve → verifiers → run).
                 if (data.source === "gym" && data.gymResume) {
                   const edits = parseStateEdits(text); // `path = value` lines → real state edits
-                  const resumeUrl = data.gymResume.urlTrail[fromStep - 1] || data.gymResume.finalUrl || "/";
+                  // Continue from the LATEST world (previous correction's end-state),
+                  // and resume at THIS step's own page — so correcting a step inside a
+                  // re-run branch resumes there, not at the original run's final URL.
+                  const rz = liveResume ?? data.gymResume;
+                  const resumeUrl = current.url || rz.urlTrail[fromStep - 1] || rz.finalUrl || "/";
                   setDriving("queued");
                   // The free-text correction is the annotator's INSTRUCTION to the
                   // agent (e.g. "verify the price before emailing"). It's injected
@@ -401,8 +410,8 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
                   const res = await driveForwardGym(
                     {
                       taskId: data.task.id,
-                      seed: data.gymResume.seed,
-                      worldState: data.gymResume.worldState,
+                      seed: rz.seed,
+                      worldState: rz.worldState,
                       edits: Object.keys(edits).length ? edits : undefined,
                       correction: text.trim() || undefined, // reviewer guidance for the agent
                       resumeUrl,
@@ -414,6 +423,9 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
                   );
                   setDriving(null);
                   if (res && res.steps.length) {
+                    // Adopt the world this re-run ended in, so the NEXT correction
+                    // continues from here — iterations compound toward the target.
+                    if (res.gymResume) setLiveResume(res.gymResume);
                     // Fork at the correction point: re-index the continuation to fromStep+1…
                     const branch = res.steps.map((s, i) => ({ ...s, idx: fromStep + i + 1 }));
                     if (sessionId) await rerunGymBranch(sessionId, { fromStep, steps: branch, mode: "agent", correction: text.trim() });
@@ -494,7 +506,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
       {autogenResult && <AutogenPanel result={autogenResult} onClose={() => setAutogenResult(null)} />}
       {editingState && data.source === "gym" && data.gymResume && (
         <StateEditor
-          world={data.gymResume.worldState ?? {}}
+          world={(liveResume ?? data.gymResume).worldState ?? {}}
           onClose={() => setEditingState(false)}
           onApply={async (edits) => {
             const res = await resumeGymReview({

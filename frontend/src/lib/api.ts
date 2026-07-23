@@ -1,6 +1,6 @@
 import { APP_COLOR } from "./appColors";
 import { reviewFixture } from "../fixtures/reviewPayload";
-import type { ReviewData, ReviewPayload, Step, TaskListItem } from "./types";
+import type { GymResume, ReviewData, ReviewPayload, Step, TaskListItem } from "./types";
 
 /** The task queue. Default = the 85 breakers; `set=fixtures` = the demo
  *  fixtures. Falls back to a single synthetic row offline. */
@@ -329,7 +329,7 @@ export async function driveForwardGym(
     correction?: string; // reviewer's natural-language instruction, injected into the agent
   },
   opts?: { onStatus?: (s: GymJob["status"]) => void; intervalMs?: number; timeoutMs?: number },
-): Promise<{ reward: number; steps: Step[] } | null> {
+): Promise<{ reward: number; steps: Step[]; gymResume?: GymResume } | null> {
   const out = await post<{ jobId: string }>("/api/gym/resume-run", body);
   const jobId = out?.jobId;
   if (!jobId) return null;
@@ -342,8 +342,11 @@ export async function driveForwardGym(
     if (!j) continue;
     if (j.status !== last) { last = j.status; opts?.onStatus?.(j.status); }
     if (j.status === "done") {
-      const review = j.review as { gymReward?: number; steps?: Step[] } | undefined;
-      return { reward: review?.gymReward ?? 0, steps: review?.steps ?? [] };
+      const review = j.review as { gymReward?: number; steps?: Step[]; gymResume?: GymResume } | undefined;
+      // Carry the RESUMED world forward: the next correction must continue from
+      // where this one ended, so iterations compound instead of re-anchoring to
+      // the original run's end-state.
+      return { reward: review?.gymReward ?? 0, steps: review?.steps ?? [], gymResume: review?.gymResume };
     }
     if (j.status === "error") return null;
   }

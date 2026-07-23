@@ -14,6 +14,10 @@ export interface Step {
   image?: string;
   /** page-level error message shown as the red frame banner (error steps, §2.1). */
   errorMsg?: string;
+  /** the page this step landed on (gym runs) — the resume point when correcting it,
+   *  so a correction on a re-run branch step resumes from THAT page, not the
+   *  original run's final URL. */
+  url?: string;
 }
 
 export interface Metric {
