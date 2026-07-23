@@ -385,3 +385,33 @@ def test_gym_verdict_is_isolated_per_annotator(client_for, db_session):
 
     assert bench(cx, sx, True) == 1   # X scores from X's OWN correction
     assert bench(cy, sy, False) == 0  # Y scores from the CANONICAL breaker, NOT X's correction
+
+
+def test_zero_action_run_with_a_verdict_is_not_a_failure():
+    """Answering / clarifying / refusing instead of clicking is the CORRECT outcome
+    for much of this dataset. A run with zero actions but a REAL milestone verdict
+    must reach the annotator, not be discarded as 'no trajectory'. Only a run with
+    neither actions nor a verdict is a genuine failure."""
+    from app.api.gym import _resume_run_job
+    from unittest import mock
+
+    import pytest
+
+    from app import gym_client, gym_review, jobs
+
+    verdict = {"score": 1.0, "success": False, "missed_milestones": ["clarified_with_user"]}
+
+    # zero steps BUT a verdict → accepted (no JobFailure raised before to_review)
+    ok_payload = {"trajectory": {"steps": [], "verifier_result": verdict, "task_brief": "b"}, "seed": 0}
+    with mock.patch.object(gym_client, "resume_run", return_value=ok_payload), \
+         mock.patch.object(gym_client, "state", return_value={}), \
+         mock.patch.object(gym_client, "world", return_value={}), \
+         mock.patch.object(gym_review, "to_review", return_value={"task": {"prompt": "p"}, "steps": [], "verifiers": []}):
+        out = _resume_run_job("M1/x", 0, {}, "/", 1, "openai")
+    assert out["gymReward"] == 0  # verdict says success=False
+    assert out["steps"] == []     # zero actions is a legitimate outcome
+
+    # zero steps AND no verdict → still a real failure
+    with mock.patch.object(gym_client, "resume_run", return_value={"trajectory": {"steps": []}}):
+        with pytest.raises(jobs.JobFailure):
+            _resume_run_job("M1/x", 0, {}, "/", 1, "openai")

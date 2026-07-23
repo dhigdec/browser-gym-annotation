@@ -206,7 +206,11 @@ def _run_review_job(task_id: str, agent: str, seed: int, brief: str | None = Non
     r = gym_client.run_agent(task_id, agent, seed, brief=brief)
     if r is None:
         raise jobs.JobFailure("gym unreachable or run failed")
-    if not (r.get("trajectory") or {}).get("steps"):
+    _t = r.get("trajectory") or {}
+    if not _t.get("steps") and not (_t.get("verifier_result") or {}):
+        # Zero actions WITH a verdict is a legitimate outcome (the agent answered,
+        # clarified or refused instead of clicking) — only a run with neither
+        # actions nor a verdict is a real failure.
         raise jobs.JobFailure("run produced no trajectory (task may lack an oracle solver)")
     review = gym_review.to_review(r, task_id, agent)
     review["backendState"] = gym_client.state()  # the REAL post-run world (cart/orders/returns/account)
@@ -326,12 +330,15 @@ def _resume_run_job(task_id: str, seed: int, state: dict, url: str, step, agent:
     r = gym_client.resume_run(task_id, seed, state, url, step, agent, correction=correction)
     if r is None:
         raise jobs.JobFailure("gym unreachable, task not found, or resume-run failed")
-    if not (r.get("trajectory") or {}).get("steps"):
-        # Name the credential for the ACTUAL agent (openai drive-forward needs the
-        # OpenAI key, not Anthropic); the gym holds the keys, so default to the
-        # generic reason unless the annotator's own key is the gap.
+    _traj = r.get("trajectory") or {}
+    if not _traj.get("steps") and not (_traj.get("verifier_result") or {}):
+        # NO actions AND no verdict = a genuine agent/gym failure. A run with a
+        # verdict but zero actions is NOT a failure: deciding to answer, clarify or
+        # refuse instead of clicking is often the CORRECT behaviour (most of this
+        # dataset is refuse/clarify tasks), so it must reach the annotator with its
+        # real milestone verdict rather than being thrown away as "no trajectory".
         missing = "OPENAI_API_KEY" if agent.startswith("openai") else "ANTHROPIC_API_KEY"
-        reason = f"the {missing.split('_')[0].lower()} agent produced no steps (it may be rate-limited, unavailable, or missing {missing})"
+        reason = f"the {missing.split('_')[0].lower()} agent produced no steps and no verdict (it may be rate-limited, unavailable, or missing {missing})"
         raise jobs.JobFailure(f"resume run produced no trajectory — {reason}")
     review = gym_review.to_review(r, task_id, agent)
     review["backendState"] = gym_client.state()

@@ -444,6 +444,14 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
                     const fullTail = [...steps.slice(canonKeep, fromStep), ...branch];
                     if (sessionId) await rerunGymBranch(sessionId, { fromStep: canonKeep, steps: fullTail, mode: "agent", correction: text.trim() });
                     dispatch({ t: "correctAndRerun", fromStep, branch, mode: "agent", gymReward: res.reward });
+                  } else if (res) {
+                    // The agent took NO new action but the gym still returned a real
+                    // verdict — answering / clarifying / refusing instead of clicking is
+                    // the CORRECT outcome for many tasks. Record the re-verified reward
+                    // instead of treating it as a failure.
+                    if (res.gymResume) setLiveResume(res.gymResume);
+                    dispatch({ t: "gymResumed", reward: res.reward });
+                    setDriveError(`The agent took no further action (it answered/declined rather than clicking) — re-verified reward ${res.reward}.`);
                   } else {
                     setDriveError("The live agent couldn't continue from that state — the gym may be unreachable or the model unavailable. Try again.");
                   }
