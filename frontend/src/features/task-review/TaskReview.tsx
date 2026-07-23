@@ -394,12 +394,17 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
                   const edits = parseStateEdits(text); // `path = value` lines → real state edits
                   const resumeUrl = data.gymResume.urlTrail[fromStep - 1] || data.gymResume.finalUrl || "/";
                   setDriving("queued");
+                  // The free-text correction is the annotator's INSTRUCTION to the
+                  // agent (e.g. "verify the price before emailing"). It's injected
+                  // into the agent's context at the resume point so the re-run is
+                  // actually steered — separate from any `path = value` state edits.
                   const res = await driveForwardGym(
                     {
                       taskId: data.task.id,
                       seed: data.gymResume.seed,
                       worldState: data.gymResume.worldState,
                       edits: Object.keys(edits).length ? edits : undefined,
+                      correction: text.trim() || undefined, // reviewer guidance for the agent
                       resumeUrl,
                       resumeStep: fromStep,
                       agent: "openai", // gpt-5.1 — genuinely continues from the corrected state
@@ -411,7 +416,7 @@ function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: ReviewData;
                   if (res && res.steps.length) {
                     // Fork at the correction point: re-index the continuation to fromStep+1…
                     const branch = res.steps.map((s, i) => ({ ...s, idx: fromStep + i + 1 }));
-                    if (sessionId) await rerunGymBranch(sessionId, { fromStep, steps: branch, mode: "agent" });
+                    if (sessionId) await rerunGymBranch(sessionId, { fromStep, steps: branch, mode: "agent", correction: text.trim() });
                     dispatch({ t: "correctAndRerun", fromStep, branch, mode: "agent", gymReward: res.reward });
                   } else {
                     setDriveError("The live agent couldn't continue from that state — the gym may be unreachable or the model unavailable. Try again.");

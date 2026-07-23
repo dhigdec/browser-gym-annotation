@@ -326,6 +326,7 @@ export async function driveForwardGym(
     resumeStep?: number;
     agent?: string;
     sessionId?: string; // the human session driving this correction → verdict isolation
+    correction?: string; // reviewer's natural-language instruction, injected into the agent
   },
   opts?: { onStatus?: (s: GymJob["status"]) => void; intervalMs?: number; timeoutMs?: number },
 ): Promise<{ reward: number; steps: Step[] } | null> {
@@ -351,7 +352,7 @@ export async function driveForwardGym(
 
 /** Persist a gym drive-forward branch on the session so the fork round-trips
  *  (rerun_from + the branch restore via the open-session snapshot). */
-export function rerunGymBranch(sid: string, body: { fromStep: number; steps: Step[]; mode?: string }): Promise<{ fromStep: number; mode: string; steps: Step[] } | null> {
+export function rerunGymBranch(sid: string, body: { fromStep: number; steps: Step[]; mode?: string; correction?: string }): Promise<{ fromStep: number; mode: string; steps: Step[] } | null> {
   return post<{ fromStep: number; mode: string; steps: Step[] }>(`/api/sessions/${sid}/rerun-gym`, body);
 }
 

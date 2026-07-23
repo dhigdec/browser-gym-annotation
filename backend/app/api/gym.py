@@ -322,8 +322,8 @@ def gym_resume(body: ResumeBody) -> dict:
 
 
 @_gym_job
-def _resume_run_job(task_id: str, seed: int, state: dict, url: str, step, agent: str, origin_session_id: str | None = None) -> dict:
-    r = gym_client.resume_run(task_id, seed, state, url, step, agent)
+def _resume_run_job(task_id: str, seed: int, state: dict, url: str, step, agent: str, origin_session_id: str | None = None, correction: str = "") -> dict:
+    r = gym_client.resume_run(task_id, seed, state, url, step, agent, correction=correction)
     if r is None:
         raise jobs.JobFailure("gym unreachable, task not found, or resume-run failed")
     if not (r.get("trajectory") or {}).get("steps"):
@@ -363,6 +363,7 @@ class ResumeRunBody(BaseModel):
     resumeUrl: str = "/"
     agent: str = "llm"
     sessionId: str | None = None  # the HUMAN session driving the correction → verdict isolation
+    correction: str = ""  # reviewer's natural-language instruction, injected into the agent's context
 
 
 def _gate_policies(brief: str, golden_trace: list[dict], actions: list[dict]) -> list[dict]:
@@ -554,7 +555,7 @@ def gym_resume_run(body: ResumeRunBody) -> dict:
     Slow + (for LLM agents) stochastic — runs as a job; poll GET /api/gym/jobs/{id}."""
     state = _apply_edits(body.worldState, body.edits) if body.edits else body.worldState
     job = jobs.store.submit(
-        "resume-run", _resume_run_job, body.taskId, body.seed, state, body.resumeUrl, body.resumeStep, body.agent, body.sessionId
+        "resume-run", _resume_run_job, body.taskId, body.seed, state, body.resumeUrl, body.resumeStep, body.agent, body.sessionId, body.correction
     )
     return {"jobId": job.id, "status": job.status}
 

@@ -101,13 +101,17 @@ def load_state(task_id: str, seed: int, state: dict, step: int | None = None) ->
     return _req("POST", "/_harness/load_state", body)
 
 
-def resume_run(task_id: str, seed: int, state: dict, url: str, step: int | None = None, agent: str = "llm") -> dict | None:
+def resume_run(task_id: str, seed: int, state: dict, url: str, step: int | None = None, agent: str = "llm", correction: str = "") -> dict | None:
     """Drive-forward resume: load a corrected world into the gym and drive an
     OBSERVING agent forward from the mid-episode URL, then verify. Slow (a real
-    agent run) + stochastic for LLM agents. See POST /_harness/resume_run."""
+    agent run) + stochastic for LLM agents. `correction` is the reviewer's
+    natural-language instruction, injected into the agent's context so the re-run
+    is actually steered. See POST /_harness/resume_run."""
     body: dict = {"agent": agent, "task_id": task_id, "seed": seed, "state": state, "url": url or "/"}
     if step is not None:
         body["step"] = step
+    if correction:
+        body["correction"] = correction
     return _req("POST", "/_harness/resume_run", body, timeout=300)
 
 
