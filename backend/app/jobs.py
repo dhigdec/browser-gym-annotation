@@ -214,13 +214,16 @@ class JobStore:
             row = db.get(models.AgentRunJob, run_id)
             if row is None:
                 return None
-            return (row.status, row.error, str(row.result_version_id or ""))
+            return (row.status, row.error, str(row.result_version_id or ""), str(row.attempt_id))
 
         got = self._txn(f"agent run lookup for {jid[:8]}", op)
         if got is None:
             return None
-        status, error, version_id = got
-        extra = {"runId": jid}
+        status, error, version_id, attempt_id = got
+        # The owning attempt rides on the job so the route can refuse a stranger.
+        # An AgentRunJob id is a bare UUID from a second id space, and without this
+        # any authenticated annotator could poll any other annotator's run.
+        extra = {"runId": jid, "attemptId": attempt_id}
         if version_id:
             extra["versionId"] = version_id
         return Job(id=jid, kind="agent-branch", status=status, error=error or None, extra=extra)

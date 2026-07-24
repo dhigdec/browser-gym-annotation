@@ -841,3 +841,21 @@ def test_the_clock_can_be_forced_off_for_a_task_to_measure_it(cli, scheduled_arc
     assert out["summary"]["accepted"] == 1
     assert out["tasks"][0]["scheduledEvents"] == 1, \
         "the task still reports its schedule — the override changes what is done, not what is true"
+
+
+def test_an_unrecognised_tick_mode_is_refused_not_treated_as_auto():
+    """The parameter used to be `tick: bool = False`. Falling through to AUTO
+    means a caller still passing the old "do not tick" silently GETS ticking —
+    a measured regression on every schedule-less task (47/60 steps to 5/60). An
+    explicit instruction that is quietly inverted is worse than an error."""
+    import pytest as _pytest
+
+    from app import backfill as bf
+
+    assert bf._tick_decision(bf.TICK_ON, None) is True
+    assert bf._tick_decision(bf.TICK_OFF, {"schedule": {"queue": [{"fired": False}]}}) is False
+    assert bf._tick_decision(bf.TICK_AUTO, {"schedule": {"queue": [{"fired": False}]}}) is True
+    assert bf._tick_decision(bf.TICK_AUTO, None) is False
+    for bad in (False, True, "", "yes", None):
+        with _pytest.raises(ValueError, match="tick must be"):
+            bf._tick_decision(bad, None)

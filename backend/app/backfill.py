@@ -236,10 +236,22 @@ def scheduled_events(seed_world: dict | None) -> int:
 
 
 def _tick_decision(mode: str, seed_world: dict | None) -> bool:
+    """Resolve the tick mode, refusing anything that is not one of the three.
+
+    This parameter used to be `tick: bool = False`. Falling through to AUTO on an
+    unrecognised value means a caller still passing the old `False` — "do not
+    tick" — silently GETS ticking, which is a measured regression on every task
+    without a schedule (47/60 steps to 5/60). An explicit instruction that is
+    quietly inverted is worse than an error.
+    """
     if mode == TICK_ON:
         return True
     if mode == TICK_OFF:
         return False
+    if mode != TICK_AUTO:
+        raise ValueError(
+            f"tick must be {TICK_AUTO!r}, {TICK_ON!r} or {TICK_OFF!r} — got {mode!r}"
+        )
     return scheduled_events(seed_world) > 0
 
 

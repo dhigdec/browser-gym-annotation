@@ -57,7 +57,10 @@ That last row is the whole reason an unconditional tick was a regression.
 `advance_and_flush` assigns `sched.now = step` *before* it consults the queue, and
 `ScheduleState.to_json` puts `now` inside the world that `hash_world` hashes — so
 ticking a task with nothing scheduled corrupts every comparison while delivering
-nothing. Measured on the six schedule-less tasks that have a recorded world trail:
+nothing. Measured on **six of the eleven** tasks that carry a recorded world
+trail — all six schedule-less. (Eleven task_ids across 15 archived files hold any
+`world_after`; the remaining five were not run in this A/B, and no number is
+claimed for them.)
 
 | task | `--tick auto` (off) | `--tick on` |
 |---|---|---|

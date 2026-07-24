@@ -323,7 +323,10 @@ def test_the_sample_kind_is_derived_not_asserted_by_the_caller(db_session, setup
     dropping the provenance silently."""
     s, v1, suite, steps, task = setup
     _approve(db_session, v1)
-    out = _finalize(db_session, setup, scorer=FakeScorer(reward=0))
+    # …and shipping a failing run has to be deliberate, so say so.
+    with pytest.raises(finalize.NotApproved, match="does not pass"):
+        _finalize(db_session, setup, scorer=FakeScorer(reward=0))
+    out = _finalize(db_session, setup, scorer=FakeScorer(reward=0), accept_failing=True)
     db_session.commit()
     sub = db_session.get(models.Submission, UUID(out["submissionId"]))
     assert sub.kind == "breaker", "a failing run is not a golden however it is labelled"
@@ -351,3 +354,50 @@ def test_a_safety_override_flags_the_sample(db_session, setup):
     assert fz._kind_for(suite, 1, ["safe1"]) == "flagged"
     assert fz._kind_for(suite, 1, ["m0"]) == "golden", "overriding a non-safety check is not a flag"
     assert fz._kind_for(suite, 1, []) == "golden"
+
+
+def test_a_step_marked_wrong_cannot_ship_inside_the_golden(db_session, setup):
+    """The UI promises "steps you rejected are not in it". Forking before a bad
+    step is how that normally holds, but a verdict recorded WITHOUT a fork left
+    the step in place and nothing downstream looked — so the promise was a lie in
+    exactly the case an annotator would trust it most."""
+    from app import versions as vmod
+
+    s, v1, suite, steps, task = setup
+    vmod.set_verdict(db_session, attempt_id=s.id, step_id=steps[1].id, verdict="rejected",
+                     note="wrong product")
+    db_session.commit()
+    _approve(db_session, v1)
+
+    with pytest.raises(finalize.NotApproved, match="marked wrong"):
+        _finalize(db_session, setup)
+    assert db_session.query(models.Submission).count() == 0
+
+
+def test_clearing_the_verdict_or_forking_lets_it_ship(db_session, setup):
+    """The refusal has to name a way forward that works, or it is just a wall."""
+    from app import versions as vmod
+
+    s, v1, suite, steps, task = setup
+    vmod.set_verdict(db_session, attempt_id=s.id, step_id=steps[1].id, verdict="rejected")
+    db_session.commit()
+    _approve(db_session, v1)
+    with pytest.raises(finalize.NotApproved):
+        _finalize(db_session, setup)
+
+    vmod.set_verdict(db_session, attempt_id=s.id, step_id=steps[1].id, verdict="pending")
+    db_session.commit()
+    assert _finalize(db_session, setup)["reward"] == 1
+
+
+def test_a_submitted_attempt_cannot_be_finalized_again(client, db_session, setup):
+    """Every other mutating endpoint asserts this; finalize writes a Submission, a
+    BenchmarkRun and a version status, so it has to as well."""
+    s, v1, suite, steps, task = setup
+    _approve(db_session, v1)
+    _finalize(db_session, setup)
+    s.status = "submitted"
+    db_session.commit()
+
+    r = client.post(f"/api/sessions/{s.id}/finalize", json={"versionId": str(v1.id)})
+    assert r.status_code in (403, 404, 409), r.text

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app import agent, canonical, checkpoints, gym_client, gym_review, jobs, models, verify, workspace
 from app.config import settings
+from app.auth import current_annotator
 from app.db import SessionLocal, get_db
 
 router = APIRouter(prefix="/api/gym", tags=["gym"])
@@ -333,10 +334,23 @@ def gym_persisted_review(task_id: str, db: Session = Depends(get_db)) -> dict:
 
 
 @router.get("/jobs/{job_id}")
-def gym_job(job_id: str) -> dict:
+def gym_job(job_id: str, current: models.Annotator = Depends(current_annotator),
+            db: Session = Depends(get_db)) -> dict:
+    """Poll a background job. A job that belongs to an ATTEMPT is readable only by
+    that attempt's owner — durable agent runs are addressable by a bare UUID, so
+    without this any authenticated annotator could watch anyone else's run. 404,
+    not 403, so the id's existence is not disclosed either (the same rule
+    _owned_session states)."""
     job = jobs.store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="unknown or expired job")
+    attempt_id = (job.extra or {}).get("attemptId")
+    if attempt_id:
+        owner = db.scalar(
+            select(models.ReviewSession.annotator_id).where(models.ReviewSession.id == _UUID(attempt_id))
+        )
+        if owner != current.id:
+            raise HTTPException(status_code=404, detail="unknown or expired job")
     return job.public()
 
 

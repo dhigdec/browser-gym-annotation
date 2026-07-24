@@ -19,7 +19,7 @@ from app import (
     agent_runs, canonical, checkpoints, finalize, gym_client, jobs, models, recorder, replay, versions,
     workspace,
 )
-from app.api.sessions import _owned_session
+from app.api.sessions import _assert_not_submitted, _owned_session
 from app.auth import current_annotator
 from app.config import settings
 from app.db import SessionLocal, get_db
@@ -242,6 +242,9 @@ class GymScorer:
 class FinalizeBody(BaseModel):
     versionId: UUID
     suiteId: UUID | None = None
+    # Shipping a run that fails its own suite has to be deliberate, exactly as the
+    # legacy path required an override on the record.
+    acceptFailing: bool = False
     # `kind` is deliberately NOT accepted. It is derived server-side from the
     # score and the overridden verifiers, so a client cannot label a run that
     # only passed by overriding a safety check as clean training gold.
@@ -255,6 +258,9 @@ def finalize_attempt(
     """Ship an approved version: clean replay, score against the bound suite,
     freeze the deliverable. Refuses rather than shipping something unbound."""
     s = _owned_session(db, session_id, current, lock=True)
+    # A submitted attempt is immutable — every other mutating endpoint asserts
+    # this, and finalize writes a Submission, a BenchmarkRun and a version status.
+    _assert_not_submitted(s)
     v = _version(db, s, body.versionId)
     suite = (
         db.get(models.VerifierSuite, body.suiteId) if body.suiteId
@@ -276,6 +282,7 @@ def finalize_attempt(
         out = finalize.finalize(
             db, attempt=s, version=v, suite=suite, executor=live, gym=endpoint,
             scorer=GymScorer(endpoint), annotator_id=current.id,
+            accept_failing=body.acceptFailing,
             task_external_id=task.external_id if task else "",
         )
     except finalize.NotApproved as exc:

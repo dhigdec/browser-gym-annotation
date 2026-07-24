@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Protocol
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import backfill, checkpoints, models, replay, versions
@@ -76,6 +77,7 @@ def finalize(
     scorer: Scorer,
     annotator_id: UUID | None = None,
     task_external_id: str = "",
+    accept_failing: bool = False,
     require_replay: bool = True,
 ) -> dict:
     """Replay, score, bind, freeze. Raises rather than shipping something unbound."""
@@ -89,6 +91,21 @@ def finalize(
     actions = actions_of(db, version)
     if not actions:
         raise NotApproved("this version has no steps to finalize")
+
+    # A step the annotator marked WRONG must not be in the shipped golden. Forking
+    # before it is how that normally happens, but a verdict recorded without a
+    # fork left the step in place and nothing downstream looked — while the UI
+    # told them "steps you rejected are not in it". Either the promise is enforced
+    # or it is a lie; enforcing it is the cheaper of the two.
+    rejected = _rejected_steps(db, attempt.id, version)
+    if rejected:
+        raise NotApproved(
+            "this version still contains "
+            + ("a step" if len(rejected) == 1 else f"{len(rejected)} steps")
+            + " you marked wrong — fork before "
+            + ("it" if len(rejected) == 1 else "them")
+            + " so the correction replaces it, or clear the verdict if it was a mistake"
+        )
 
     result = None
     if require_replay:
@@ -121,6 +138,15 @@ def finalize(
         db, attempt_id=attempt.id, world=final_world, step_clock=len(actions),
     )
     reward, results = scorer.score(suite, final_world)
+    # A run that does not pass its own suite is not shipped by accident. The
+    # legacy path refused this outright unless a human took the override on the
+    # record; keeping the gate means "the verifiers say no" cannot become a
+    # dataset row through nothing more than clicking the last button.
+    if reward != 1 and not accept_failing:
+        raise NotApproved(
+            "this version does not pass its verifier suite — ship it deliberately as a breaker "
+            "if that is what you mean, or fix the correction first"
+        )
     overridden: list[str] = []  # v2 has no override path yet; the rule is here so adding one cannot forget it
 
     # The sample's kind is DERIVED, never named by the caller. The legacy path
@@ -153,6 +179,20 @@ def finalize(
         "finalCheckpointId": str(final_cp.id),
         "replayed": bool(result), "steps": len(actions),
     }
+
+
+def _rejected_steps(db: Session, attempt_id: UUID, version: models.TrajectoryVersion) -> list[str]:
+    """Steps in this version that carry a `rejected` verdict for this attempt."""
+    marked = {
+        sid for sid, v in (
+            (str(r.step_id), r.verdict) for r in db.scalars(
+                select(models.StepVerdict).where(models.StepVerdict.attempt_id == attempt_id)
+            )
+        ) if v == "rejected"
+    }
+    if not marked:
+        return []
+    return [str(s.id) for s in versions.flatten(db, version) if str(s.id) in marked]
 
 
 def _kind_for(suite: models.VerifierSuite, reward: int, overridden: list[str]) -> str:
