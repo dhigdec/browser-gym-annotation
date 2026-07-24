@@ -3,7 +3,7 @@ ownership and concurrency gates that make it safe for two annotators at once."""
 
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -212,3 +212,53 @@ def test_the_whole_surface_requires_authentication(anon_client, gym_task):
     ]:
         r = anon_client.post(path, json={}) if method == "post" else anon_client.get(path)
         assert r.status_code == 401, path
+
+
+# --------------------------------------------------------------------------- v1/v2 divergence
+def test_the_legacy_submit_refuses_to_ship_a_golden_that_contradicts_the_version_head(client, gym_task, db_session):
+    """Both correction systems are reachable from the same screen, and the legacy
+    one builds its golden from the recorded run — it knows nothing about versions.
+    Measured before this guard: an annotator forked before step 2 (rejecting it),
+    pressed the old Submit, and the exported sample carried all three steps
+    including the rejected one, with no binding and no sign anything was wrong.
+    Silently shipping a golden that contradicts the annotator's own decision is
+    worse than any error."""
+    sid = _open(client, gym_task.external_id)
+    v1 = _baseline(client, sid)
+    steps = client.get(f"/api/sessions/{sid}/versions/{v1['id']}/steps").json()["steps"]
+    v2 = client.post(f"/api/sessions/{sid}/versions/fork", json={
+        "parentVersionId": v1["id"], "stepId": steps[2]["stepId"], "mode": "before",
+    }).json()
+    client.post(f"/api/sessions/{sid}/versions/select", json={"versionId": v2["id"], "expectedRevision": 0})
+
+    s = db_session.get(models.ReviewSession, UUID(sid))
+    s.status = "benchmark_run"
+    suite = models.VerifierSuite(session_id=s.id, version=1)
+    db_session.add(suite)
+    db_session.flush()
+    db_session.add(models.BenchmarkRun(suite_id=suite.id, reward=1, results={}))
+    db_session.commit()
+
+    r = client.post(f"/api/sessions/{sid}/submit", json={"reward": 1, "kind": "golden"})
+    assert r.status_code == 409
+    assert "finalize" in r.json()["detail"], "point at the path that DOES honour the work"
+    assert db_session.query(models.Submission).filter(models.Submission.session_id == s.id).count() == 0
+
+
+def test_the_legacy_submit_still_works_on_an_uncorrected_attempt(client, gym_task, db_session):
+    """The guard must not block the ordinary case: a run that needed no correction
+    has only v1, which IS the recorded run, so the legacy golden agrees with it."""
+    sid = _open(client, gym_task.external_id)
+    v1 = _baseline(client, sid)
+    client.post(f"/api/sessions/{sid}/versions/select", json={"versionId": v1["id"], "expectedRevision": 0})
+
+    s = db_session.get(models.ReviewSession, UUID(sid))
+    s.status = "benchmark_run"
+    s.reviewed_through = 99
+    suite = models.VerifierSuite(session_id=s.id, version=1)
+    db_session.add(suite)
+    db_session.flush()
+    db_session.add(models.BenchmarkRun(suite_id=suite.id, reward=1, results={}))
+    db_session.commit()
+
+    assert client.post(f"/api/sessions/{sid}/submit", json={"reward": 1, "kind": "golden"}).status_code == 200

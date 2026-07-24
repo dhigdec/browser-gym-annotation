@@ -507,6 +507,17 @@ def archive_dir(tmp_path):
     return tmp_path
 
 
+def _load_cli():
+    """Import scripts/backfill_trajectories.py from its own location."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "backfill_trajectories.py"
+    spec = importlib.util.spec_from_file_location("backfill_trajectories_cli", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 @pytest.fixture()
 def cli(_session_factory):
     """The real CLI, wired to fakes at the ONE seam it has: how it connects to a
@@ -514,7 +525,11 @@ def cli(_session_factory):
     dry-run default, the per-task commit — is the shipped code path."""
     import contextlib
 
-    from scripts import backfill_trajectories as cli_mod
+    # Loaded by PATH, not as a package. `scripts/` is a directory of scripts, not
+    # an installed module, so `from scripts import ...` only resolves when pytest
+    # happens to be run from backend/ — the suite passed there and errored from
+    # the repo root, which is where CI runs it.
+    cli_mod = _load_cli()
 
     def connect(args):
         gym = FakeGym()
