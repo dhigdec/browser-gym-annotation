@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Button, Icon, t, tint, weight } from "../../ds";
+import { Button, Icon, t, tint, weight, Pressable } from "../../ds";
 import {
   buildLineage,
   createFork,
@@ -166,8 +166,9 @@ function StatusChip({ status }: { status: VersionStatus }) {
 
 function Pill({ children, onClick, disabled, tone = t.primary6 }: { children: ReactNode; onClick: () => void; disabled?: boolean; tone?: string }) {
   return (
-    <span
-      onClick={disabled ? undefined : onClick}
+    <Pressable
+      onClick={onClick}
+      disabled={disabled}
       style={{
         padding: "4px 10px",
         borderRadius: t.radiusLg,
@@ -182,7 +183,7 @@ function Pill({ children, onClick, disabled, tone = t.primary6 }: { children: Re
       }}
     >
       {children}
-    </span>
+    </Pressable>
   );
 }
 
@@ -203,9 +204,9 @@ function MovedOnNotice({ notice, onDismiss }: { notice: string; onDismiss: () =>
     >
       <Icon name="alert" size={14} color={t.yellowDark} style={{ flexShrink: 0, marginTop: 1 }} />
       <span style={{ flex: 1, fontSize: "0.719rem", lineHeight: 1.45, color: t.n1, fontWeight: weight.medium }}>{notice}</span>
-      <span onClick={onDismiss} style={{ cursor: "pointer", flexShrink: 0, marginTop: 1 }}>
+      <Pressable onClick={onDismiss} label="Dismiss this notice" style={{ flexShrink: 0, marginTop: 1 }}>
         <Icon name="close" size={13} color={t.n3} />
-      </span>
+      </Pressable>
     </div>
   );
 }
@@ -297,12 +298,13 @@ export function VersionGraph({
 
                 <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 5 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
-                    <span
+                    <Pressable
                       onClick={() => onView(v.id)}
-                      style={{ fontFamily: t.fontMono, fontSize: "0.8125rem", fontWeight: weight.bold, color: viewing ? t.primary6 : t.n0, cursor: "pointer" }}
+                      label={`Open version ${v.versionNo}`}
+                      style={{ fontFamily: t.fontMono, fontSize: "0.8125rem", fontWeight: weight.bold, color: viewing ? t.primary6 : t.n0 }}
                     >
                       v{v.versionNo}
-                    </span>
+                    </Pressable>
                     <span style={{ fontSize: "0.719rem", color: t.n2 }}>{KIND_LABEL[v.kind] ?? v.kind}</span>
                     {v.isHead && (
                       <span

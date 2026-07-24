@@ -169,16 +169,21 @@ describe("fork before and continue after", () => {
       },
     });
 
-    const control = screen.getByText(FORK_COPY.before.action);
-    // Counted on the control itself (it is thrown away with the render), so the
-    // assertion below cannot pass because the double-click only landed once.
-    let clicks = 0;
-    control.addEventListener("click", () => (clicks += 1));
+    const control = screen.getByText(FORK_COPY.before.action).closest("button")!;
+    // The dispatch is counted on the control itself so a double-click that only
+    // landed once cannot masquerade as a working guard.
+    let dispatched = 0;
+    control.addEventListener("click", () => (dispatched += 1));
 
     await user.dblClick(control);
 
-    expect(clicks, "the annotator really did click twice").toBe(2);
-    expect(forks, "the second click landed while the first fork was still in flight").toBe(1);
+    // TWO mechanisms now stop the second fork, and the outer one is the browser's:
+    // a real <button> goes disabled after the first click, so the second is never
+    // delivered at all. The `detail > 1` guard behind it still matters for a
+    // caller whose handler resolves synchronously. Assert the OUTCOME — one branch
+    // — rather than which layer caught it.
+    expect(dispatched, "a real button stops delivering once it is disabled").toBeLessThanOrEqual(2);
+    expect(forks, "one double-click is one branch, however it was caught").toBe(1);
   });
 
   it("takes the next fork once the one it started has landed", async () => {

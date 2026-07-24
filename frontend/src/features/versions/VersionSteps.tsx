@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ACTION_COLOR, Icon, t, tint, weight, type ActionType } from "../../ds";
+import { ACTION_COLOR, Icon, Pressable, t, tint, weight, type ActionType } from "../../ds";
 import {
   applyVerdict,
   fetchVersionSteps,
@@ -52,8 +52,9 @@ function VerdictDot({ verdict }: { verdict: StepVerdict }) {
 function Action({ children, hint, tone, onClick, disabled }: { children: ReactNode; hint: string; tone: string; onClick: (e: React.MouseEvent) => void; disabled?: boolean }) {
   return (
     <div style={{ flex: 1, minWidth: 190, display: "flex", flexDirection: "column", gap: 4 }}>
-      <span
-        onClick={disabled ? undefined : onClick}
+      <Pressable
+        onClick={onClick}
+        disabled={disabled}
         style={{
           display: "inline-flex",
           alignItems: "center",
@@ -71,7 +72,7 @@ function Action({ children, hint, tone, onClick, disabled }: { children: ReactNo
         }}
       >
         {children}
-      </span>
+      </Pressable>
       <span style={{ fontSize: "0.6875rem", lineHeight: 1.4, color: t.n3 }}>{hint}</span>
     </div>
   );
@@ -177,9 +178,11 @@ export function VersionSteps({
           const hue = ACTION_COLOR[s.type as ActionType] ?? t.n3;
           return (
             <div key={s.stepId} style={{ borderTop: `1px solid ${t.n8}` }}>
-              <div
+              <Pressable
                 onClick={() => onSelectStep(s.stepId)}
+                label={`Step ${s.displayIdx + 1}: ${s.description}`}
                 style={{
+                  width: "100%",
                   display: "flex",
                   alignItems: "center",
                   gap: 11,
@@ -208,7 +211,7 @@ export function VersionSteps({
                     {origin ? `inherited · v${origin}` : "inherited"}
                   </span>
                 )}
-              </div>
+              </Pressable>
 
               {selected && (
                 <div style={{ padding: "2px 18px 16px 36px", display: "flex", flexDirection: "column", gap: 12, background: t.surfaceTint }}>
@@ -222,9 +225,12 @@ export function VersionSteps({
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <span style={{ fontSize: "0.6875rem", fontWeight: weight.bold, color: t.n3, textTransform: "uppercase", letterSpacing: "0.04em", width: 62 }}>Verdict</span>
                     {(["verified", "rejected", "pending"] as const).map((v) => (
-                      <span
+                      <Pressable
                         key={v}
-                        onClick={busy ? undefined : () => onVerdict(s, v)}
+                        onClick={() => onVerdict(s, v)}
+                        disabled={busy}
+                        pressed={s.verdict === v}
+                        label={`Mark step ${s.displayIdx + 1} ${v === "verified" ? "verified" : v === "rejected" ? "wrong" : "not reviewed"}`}
                         style={{
                           padding: "4px 11px",
                           borderRadius: t.radiusLg,
@@ -238,7 +244,7 @@ export function VersionSteps({
                         }}
                       >
                         {v === "verified" ? "Verified" : v === "rejected" ? "Wrong" : "Not reviewed"}
-                      </span>
+                      </Pressable>
                     ))}
                   </div>
 
