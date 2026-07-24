@@ -105,6 +105,10 @@ def finalize(
         result = replay.replay(
             actions, executor,
             expected_hashes=[a["expectedHash"] for a in actions],
+            # The clean replay must reproduce the RECORDING's protocol, clock and
+            # all. Without the tick the replayed world trails by one step and a
+            # correct trajectory is rejected as diverged.
+            clock=replay.advance_clock(gym),
             strict=True,
         )
 

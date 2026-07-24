@@ -18,7 +18,7 @@ ships as ground truth and then fails to reproduce for whoever trains on it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from app import checkpoints
 
@@ -32,6 +32,9 @@ class ReplayRejected(RuntimeError):
         self.at = at
         self.reason = reason
         self.detail = detail
+
+
+Clock = Callable[[int], object]
 
 
 class Executor(Protocol):
@@ -51,11 +54,28 @@ class ReplayResult:
     reason: str = ""
 
 
+def advance_clock(gym) -> "Clock | None":
+    """The recording protocol's clock tick, as a callable.
+
+    The gym's deterministic clock IS its step counter, and it is advanced by
+    `/_harness/verify {step}` — which is what the harness calls after every agent
+    action. A replay that skips it leaves the world one tick behind the world the
+    recording captured, so EVERY hash comparison fails and a perfectly good
+    trajectory is rejected as diverged. Found by walking the whole loop once: the
+    first finalize of a real correction failed at action 0.
+    """
+    verify = getattr(gym, "verify", None)
+    if verify is None:
+        return None
+    return lambda i: verify(i)
+
+
 def replay(
     actions: list[dict],
     executor: Executor,
     *,
     expected_hashes: list[str] | None = None,
+    clock: "Clock | None" = None,
     strict: bool = True,
 ) -> ReplayResult:
     """Run the committed sequence against a restored environment.
@@ -76,6 +96,11 @@ def replay(
             # only the option click, and the option no longer exists.
             return _fail(out, i, reason, strict, detail=kind)
 
+        # Advance the deterministic clock exactly as the recording did, BEFORE
+        # reading the world — otherwise the replayed world trails the recorded one
+        # by a tick and every comparison below diverges.
+        if clock is not None:
+            clock(i)
         world = executor.world()
         digest = checkpoints.hash_world(world)
         out.steps.append({"index": i, "kind": kind, "resolved": res.get("resolved") or {}, "worldHash": digest})
@@ -115,4 +140,5 @@ def restore_and_replay(
     from the wrong state would make every downstream comparison meaningless."""
     if checkpoint is not None and not checkpoints.restore(checkpoint, gym, task_id=task_id, seed=seed):
         raise ReplayRejected(0, "could not restore the branch's starting checkpoint")
-    return replay(actions, executor, expected_hashes=expected_hashes, strict=strict)
+    return replay(actions, executor, expected_hashes=expected_hashes,
+                  clock=advance_clock(gym), strict=strict)
