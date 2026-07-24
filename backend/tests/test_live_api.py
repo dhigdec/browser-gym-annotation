@@ -137,6 +137,15 @@ def _forget_open_browsers():
 def live_service(monkeypatch):
     svc = FakeLiveBrowser()
     monkeypatch.setattr(urllib.request, "urlopen", svc.urlopen)
+    # Opening a live browser SEEDS the gym for the attempt's task. Patch reset on
+    # the CLASS rather than replacing endpoint_for — several of these tests are
+    # about which endpoint gets resolved, and overriding that would erase them.
+    seeded: list = []
+    monkeypatch.setattr(
+        GymEndpoint, "reset",
+        lambda self, task_id, seed=0: (seeded.append((task_id, seed)), {"ok": True})[1],
+    )
+    svc.reset_calls = seeded
     return svc
 
 
@@ -353,3 +362,59 @@ def test_an_unset_host_is_a_no_op(monkeypatch):
 
     monkeypatch.setattr(settings, "gym_host_for_browser", "")
     assert live_api._browser_visible("http://localhost:8000") == "http://localhost:8000/"
+
+
+def test_the_task_start_url_survives_the_rewrite(monkeypatch):
+    """Callers pass a task's OWN start URL now — M46/sneaked_addon begins on /cart.
+    Normalising every URL to a trailing slash turned that into "/cart/", which is a
+    different route."""
+    from app.api import live as live_api
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "gym_host_for_browser", "localhost")
+    assert live_api._browser_visible("http://host.docker.internal:8000/cart") == "http://localhost:8000/cart"
+    monkeypatch.setattr(settings, "gym_host_for_browser", "")
+    assert live_api._browser_visible("http://localhost:8000/cart") == "http://localhost:8000/cart"
+    assert live_api._browser_visible("http://localhost:8000") == "http://localhost:8000/"
+
+
+def test_opening_the_browser_seeds_the_gym_for_this_attempts_task(client, attempt, live_service, db_session):
+    """THE wrong-world bug, reported from the UI.
+
+    The gym holds one global session per process and keeps whatever the last
+    caller left in it. An annotator opened M46/sneaked_addon — "check out the
+    wireless keyboard that's in my cart" — and got an EMPTY cart plus a different
+    task's on-page brief, because the last thing to touch the gym was M15. Every
+    interaction they recorded would have been against the wrong world."""
+    from uuid import UUID
+
+    s = db_session.get(models.ReviewSession, UUID(attempt))
+    task = db_session.get(models.Task, s.task_id)
+
+    assert client.post(f"/api/sessions/{attempt}/live").status_code == 200
+    assert live_service.reset_calls == [(task.external_id, s.seed)], (
+        "the gym must be reset to THIS attempt's task before the annotator sees it"
+    )
+
+
+def test_the_browser_lands_where_the_task_starts(client, db_session, live_service):
+    """M46 begins on /cart. Dropping the annotator on the gym home page makes them
+    navigate to a state the task already guaranteed them — and invites them to
+    record that navigation as though it were part of the trajectory."""
+    task = models.Task(external_id=f"M46_seed_{uuid4().hex[:6]}", title="t", prompt="p",
+                       source="gym", start_url="http://localhost:8000/cart")
+    db_session.add(task)
+    db_session.commit()
+    sid = client.post(f"/api/tasks/{task.external_id}/sessions", json={}).json()["sessionId"]
+
+    body = client.post(f"/api/sessions/{sid}/live").json()
+    assert body["url"] == "http://localhost:8000/cart", "the task's own start URL, path intact"
+
+
+def test_a_gym_that_cannot_seed_the_task_refuses_to_open(client, attempt, live_service, monkeypatch):
+    """Opening anyway would hand the annotator a browser showing someone else's
+    world, which is worse than not opening at all."""
+    monkeypatch.setattr(GymEndpoint, "reset", lambda self, task_id, seed=0: None)
+    r = client.post(f"/api/sessions/{attempt}/live")
+    assert r.status_code == 409
+    assert "wrong world" in str(r.json()["detail"])

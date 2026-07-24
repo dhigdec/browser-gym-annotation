@@ -56,12 +56,16 @@ def _browser_visible(base_url: str) -> str:
     point of the isolation. Unset means "same namespace", which is correct for a
     single-host dev box and keeps this a no-op there.
     """
-    host = settings.gym_host_for_browser
-    if not host:
-        return base_url.rstrip("/") + "/"
     parsed = urllib.parse.urlsplit(base_url)
-    netloc = host if parsed.port is None else f"{host}:{parsed.port}"
-    return urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path, "", "")).rstrip("/") + "/"
+    host = settings.gym_host_for_browser
+    netloc = parsed.netloc
+    if host:
+        netloc = host if parsed.port is None else f"{host}:{parsed.port}"
+    # Preserve the PATH. Callers now pass a task's own start URL (M46 begins on
+    # /cart), and normalising every URL to a trailing slash turned that into
+    # "/cart/" — a different route.
+    path = parsed.path or "/"
+    return urllib.parse.urlunsplit((parsed.scheme, netloc, path, parsed.query, ""))
 
 
 router = APIRouter(prefix="/api", tags=["live"])
@@ -248,7 +252,32 @@ def open_live_session(
             return payload
 
         _ATTACHED.pop(str(s.id), None)
-        start_url = _browser_visible(workspace.endpoint_for(db, s.id).base_url)
+        endpoint = workspace.endpoint_for(db, s.id)
+        task = db.get(models.Task, s.task_id)
+
+        # SEED THE WORLD FIRST. The gym holds one global session per process and
+        # keeps whatever the last caller left in it — so without this the
+        # annotator drives a browser showing some other task's world entirely.
+        # Observed: an annotator opened M46/sneaked_addon ("check out the keyboard
+        # in my cart") and got an empty cart and a different task's on-page brief,
+        # because the last thing to touch the gym was M15. Anything they recorded
+        # would have been against the wrong state.
+        if task is not None and task.external_id and (task.source == "gym" or s.source == "gym"):
+            if endpoint.reset(task.external_id, s.seed) is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"could not seed the gym for {task.external_id} — the live browser would "
+                        "show the wrong world, so it was not opened"
+                    ),
+                )
+
+        # …and land where the TASK starts, not at the gym root. M46 begins on
+        # /cart; dropping the annotator on the home page makes them navigate to
+        # the state the task already guaranteed them.
+        start_url = _browser_visible(
+            (task.start_url if task is not None and task.start_url else endpoint.base_url)
+        )
         opened = _open_browser(start_url, current.email)
         entry = _Attached(
             live_session_id=str(opened["session_id"]),

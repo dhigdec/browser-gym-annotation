@@ -320,6 +320,10 @@ refuses it and names the step that broke.
   monotonic acknowledged input ids.
 - **Structured actions** (`/act`) mirror the agent harness vocabulary exactly, so a
   human-authored golden replays in the same benchmark that runs agents.
+- **Opening a session seeds the gym** to the attempt's `(task, seed)` and lands the
+  browser on the task's own start URL. The gym holds one global session per
+  process and keeps whatever the last caller left in it, so without this the
+  annotator drives some other task's world entirely.
 - `/focused` reports which element has keyboard focus — the client cannot infer it,
   and mis-attributing a keystroke defeats the backend's redaction of sensitive
   fields.
@@ -526,7 +530,7 @@ Full detail: [`docs/preflight-world-trail.md`](./preflight-world-trail.md).
 
 | Item | State |
 |---|---|
-| Workspace isolation | Implemented and tested, **off by default** |
+| Workspace isolation | Implemented and tested, **off by default**. Until it is on, opening a live browser reseeds the *shared* gym — fine for one annotator, not for two at once |
 | Rerun cap | Implemented, **off by default** (`agent_run_cap=0`) — correctly, until manual fallback is proven at scale |
 | Scheduled-event replay | 18 tasks need clock ticks; auto-detected, but those tasks have no recorded world to verify against |
 | Legacy v1 correction path | Fenced off in the UI for versioned attempts; code still present for pre-v2 attempts |
