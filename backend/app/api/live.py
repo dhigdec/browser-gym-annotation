@@ -165,6 +165,28 @@ def _open_browser(url: str, owner: str) -> dict:
     return payload
 
 
+def _task_start_url(gym_base: str, task_start_url: str) -> str:
+    """Where the browser should land, as an absolute URL on THIS attempt's gym.
+
+    Two things make this less trivial than it looks, and both were measured:
+
+    * `task.start_url` is stored inconsistently — 270 of 312 tasks hold a relative
+      path ("/cart"), 20 hold an absolute URL. Handing a bare path to Playwright's
+      goto() fails outright, so the path has to be resolved against a base.
+    * When it IS absolute it names the SHARED gym, which is the wrong host for an
+      attempt holding an isolated workspace. So only the path and query are taken
+      from the task; the host always comes from the attempt's own endpoint.
+    """
+    base = gym_base.rstrip("/")
+    if not task_start_url:
+        return base + "/"
+    parsed = urllib.parse.urlsplit(task_start_url)
+    path = parsed.path or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    return base + urllib.parse.urlunsplit(("", "", path, parsed.query, ""))
+
+
 def browser_visible_gym_url(base_url: str) -> str:
     """The gym URL as the BROWSER sees it — see _browser_visible."""
     return _browser_visible(base_url)
@@ -276,7 +298,7 @@ def open_live_session(
         # /cart; dropping the annotator on the home page makes them navigate to
         # the state the task already guaranteed them.
         start_url = _browser_visible(
-            (task.start_url if task is not None and task.start_url else endpoint.base_url)
+            _task_start_url(endpoint.base_url, task.start_url if task is not None else "")
         )
         opened = _open_browser(start_url, current.email)
         entry = _Attached(

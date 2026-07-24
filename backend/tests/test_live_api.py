@@ -418,3 +418,34 @@ def test_a_gym_that_cannot_seed_the_task_refuses_to_open(client, attempt, live_s
     r = client.post(f"/api/sessions/{attempt}/live")
     assert r.status_code == 409
     assert "wrong world" in str(r.json()["detail"])
+
+
+def test_a_relative_task_start_url_is_resolved_against_the_attempts_gym():
+    """`task.start_url` is stored inconsistently — measured on the live DB, 270 of
+    312 tasks hold a relative path and 20 hold an absolute URL. Handing Playwright
+    a bare "/cart" fails outright, so testing only an absolute-URL task (M46) and
+    generalising would have broken the browser for the other 270."""
+    from app.api.live import _task_start_url
+
+    base = "http://127.0.0.1:9931"
+    assert _task_start_url(base, "/cart") == f"{base}/cart"
+    assert _task_start_url(base, "/account/orders") == f"{base}/account/orders"
+    assert _task_start_url(base, "/") == f"{base}/"
+    assert _task_start_url(base, "") == f"{base}/", "no start URL means the gym root"
+
+
+def test_an_absolute_start_url_still_lands_on_this_attempts_gym():
+    """When start_url IS absolute it names the SHARED gym. An attempt holding an
+    isolated workspace must not be sent there — that is the corruption workspace
+    isolation exists to prevent. Only the path comes from the task."""
+    from app.api.live import _task_start_url
+
+    got = _task_start_url("http://127.0.0.1:9931", "http://localhost:8000/cart")
+    assert got == "http://127.0.0.1:9931/cart"
+    assert "localhost:8000" not in got
+
+
+def test_the_query_string_survives():
+    from app.api.live import _task_start_url
+
+    assert _task_start_url("http://g:8000", "/mail?sent=1") == "http://g:8000/mail?sent=1"
