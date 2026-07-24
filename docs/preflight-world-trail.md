@@ -135,12 +135,13 @@ gym (312 tasks vs the archive's 315).
 
 ## Why the failures fail
 
-**1. Randomly generated ids — the systemic one, and it is not the clock.**
-`server/mutations.py::_new_id` is `f"{prefix}_{secrets.token_hex(4)}"`. Placing an
-order, filing a return or adding an address mints an id that cannot be reproduced,
-and it is embedded in the order record, the confirmation email body, the tracking
-URL and the cross-app event payload. Every world from that action onward differs.
-The step at which a run's first random id appears predicts its coverage exactly:
+**1. Randomly generated ids — FIXED IN THE GYM, but not retroactively.**
+`server/mutations.py::_new_id` was `f"{prefix}_{secrets.token_hex(4)}"`, and
+`_now()` read the wall clock. Placing an order, filing a return or adding an
+address minted an id embedded in the order record, the confirmation email body,
+the tracking URL and the cross-app event payload, so every world from that action
+onward differed. The step at which a run's first random id appeared predicted its
+coverage exactly, five for five:
 
 | task | steps | first random id at | worlds reconstructed |
 |---|---|---|---|
@@ -150,10 +151,18 @@ The step at which a run's first random id appears predicts its coverage exactly:
 | M47/phantom_duplicate | 11 | step 10 | **10** |
 | M70/mixed_basket_two_redirects | 14 | step 13 | **13** |
 
-Five for five. M57 — previously recorded here as the scheduled-event case — has
-an **empty schedule queue**; its 4/17 is entirely `ORD_5FCEE437` vs a fresh
-`ORD_78535B58`, and two consecutive replays produce two different ids. The
-earlier diagnosis in this file was wrong.
+Both are now derived from the task, the seed and the deterministic step clock
+(gym `1865e80`). Measured at the mutation layer: 4/4 categories — line ids, order
+ids, tracking numbers, timestamps — went from all-differing to all-identical, and
+a freshly recorded 4-step episode now replays 4/4 worlds byte-identically.
+
+**This does not improve the existing archive, and was re-measured to confirm it:
+those five tasks are 40/57 before the fix and 40/57 after.** Their recorded worlds
+contain ids like `ORD_5FCEE437`, minted by `token_hex` in July 2026 — no
+deterministic scheme can reproduce a value that was never a function of anything.
+The benefit is forward-looking: runs recorded from now on are replayable, and
+**re-capturing** an archived task now produces one that is. Re-capture, not
+replay, is what raises coverage on the old set.
 
 **2. Locators that no longer resolve — 2,992 of 8,306 steps did not execute.**
 No archived action was untranslatable (0 of 8,340 picked steps), so every one of
