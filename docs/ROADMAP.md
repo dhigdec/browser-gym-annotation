@@ -14,7 +14,7 @@ it.
 The correction loop works. An annotator can open a breaker, review it step by step,
 reject a bad step, fork before it, have an agent re-run or drive it by hand, get it
 QC-approved, and ship a version-bound sample. That was proven end to end against the
-running stack: 23/23 platform checks, 14/14 shipping checks, 393 backend + 160
+running stack: 23/23 platform checks, 14/14 shipping checks, 397 backend + 160
 frontend tests.
 
 **And it is useful for 12 tasks out of 312.**
@@ -37,53 +37,57 @@ waiting for them.**
 Nothing else on this roadmap is worth starting first. Hiring annotators, defining
 taxonomies, scaling throughput — all of it assumes there is something to annotate.
 
-### 0.1 Fix determinism at the source
+### 0.1 Close the two residual determinism gaps
 
-`server/mutations.py::_new_id` uses `secrets.token_hex(4)`. Every order, return,
-address and payment method mints an unreproducible id, and that id is embedded in
-the order record, the confirmation email body, the tracking URL and the cross-app
-event payload. From that step onward, two runs of the same `(task, seed)` diverge.
+The gym is deterministic as of commit `1865e80`: `_new_id` derives from
+`blake2s(task|seed|prefix|step|seq)`, `_now` from the step clock. Verified — two
+full oracle episodes of the same `(task, seed)` produce identical worlds, including
+on order-placing tasks.
 
-Measured consequence: replay-backfill tops out at **60% of steps**, and the cutoff
-lands exactly where the first random id appears — verified five for five.
+Two gaps remain, and both **silently corrupt what we capture**, so they come before
+any capture work:
 
-**Fix:** derive ids from the episode, not from entropy — a seeded counter over
-`(task_id, seed, step, sequence)`. `_now()` needs the same treatment: it uses wall
-clock and lands in persisted timestamps.
+| Gap | Effect |
+|---|---|
+| `mutations.py:521` / `:651` take wall-clock dates for `estimated_delivery` and `next_delivery_date`, both inside the hashed world | Date-granular, so two runs minutes apart agree and two either side of midnight do not. **Every stored golden containing an order stops replaying the day after capture.** Derive them from the step clock like `_now` |
+| Per-app id counters (`MailState._next` and the food/calendar/market equivalents) appear in neither `to_json()` nor `statecodec._MUTABLE_SUBAPP` | A mid-episode restore restarts the counter, so the next minted id overwrites an existing record. Breaks checkpoint restore |
 
-This is a small change in one file with a wide blast radius. It needs its own
-verification pass: reset a task twice, run the same actions, assert byte-identical
-worlds across the tasks that currently fail.
+The first is the more dangerous shape: invisible to same-day testing, degrading
+silently over time.
 
-> **Exit criteria:** two runs of the same `(task, seed)` executing the same actions
-> produce identical world hashes on ≥95% of the 315 archived tasks.
+> **Exit criteria:** a run captured today still replays byte-identically tomorrow,
+> and a checkpoint restored mid-episode mints no colliding ids.
 
-### 0.2 Ingest the archive
+### 0.2 Re-capture the archive
 
-4,760 archived runs covering 315 tasks exist on disk. Twelve are in the platform.
-`app/backfill.py` already reconstructs per-step world trails by replaying them, and
-it is self-validating — it accepts a reconstruction only when it matches what was
+The 4,760 archived runs were recorded **before** `1865e80`. They contain ids drawn
+from `secrets.token_hex` that today's gym will never reproduce — which is exactly
+why replay-backfill against them tops out at 60% of steps, with the cutoff landing
+where each run's first randomly-minted id appears (five for five).
+
+No amount of further work on the gym recovers those runs. They need re-capturing,
+which is now cheap and reproducible: a deterministic oracle run costs nothing but
+wall clock.
+
+The caveat is what an oracle run *is*. It produces a **passing** trajectory, so it
+seeds the platform with something reviewable but cannot stand in for a breaking run.
+The 85-breaker set needs a model, which costs money — see
+[Open questions](#open-questions).
+
+> **Exit criteria:** every task has a freshly captured run whose world trail
+> reconstructs, and every task in the 85-breaker set has a captured *breaking* run.
+
+### 0.3 Ingest into the platform
+
+`app/backfill.py` already turns a captured run into a canonical, forkable record and
+is self-validating — it accepts a reconstruction only when it matches what was
 recorded, and skips otherwise.
 
-Sequence matters: **0.1 before 0.2.** Ingesting now locks in the 60% ceiling; after
-the determinism fix the same pass should approach full coverage.
+Sequence matters: ingesting the pre-`1865e80` archive locks in the 60% ceiling
+permanently. Ingesting freshly captured runs does not.
 
 > **Exit criteria:** ≥250 of 312 tasks have a canonical run bound in the platform,
 > each with a per-step world trail and semantic locators on every action step.
-
-### 0.3 Re-capture what replay cannot reach
-
-Some archived runs predate per-step world recording entirely and some locators no
-longer resolve. For those, replay cannot help — they need a fresh capture through
-the fixed persist path.
-
-The oracle is free and deterministic, so re-capture costs nothing but wall clock.
-The caveat: an oracle run is a *passing* trajectory, so it cannot stand in for a
-breaking run under review. Breakers need a model, which costs money (see
-[Open questions](#open-questions)).
-
-> **Exit criteria:** every task in the 85-breaker set has a canonical *breaking* run
-> with a full world trail.
 
 ---
 
@@ -185,11 +189,13 @@ memorising static patterns — good instinct for an RL environment. But it colli
 with the property everything here rests on: **a task is `(task_id, seed)` and must
 reproduce byte-identically.**
 
-The collision is resolvable, and the resolution is the same fix as Phase 0.1:
-dynamic generation is fine as long as it is **seeded** rather than random. If the
-per-task database is generated from `(task_id, seed)`, it is both varied *and*
-reproducible. If it is generated from entropy, we lose replay, checkpoints, forking
-and the ability to verify a golden — the entire correction loop.
+The collision is resolvable, and the gym already demonstrates the resolution:
+dynamic generation is fine as long as it is **seeded** rather than random. `_new_id`
+was drawing from `secrets.token_hex` and now derives from
+`blake2s(task|seed|prefix|step|seq)` — same variety, fully reproducible. If a
+per-task database is generated from `(task_id, seed)` it is both varied and
+replayable; generated from entropy, we lose replay, checkpoints, forking and the
+ability to verify a golden at all.
 
 **Ask:** confirm dynamic seeding means *seeded generation*, not *random generation*.
 
@@ -216,9 +222,9 @@ gantt
     dateFormat X
     axisFormat %s
     section Phase 0 · data
-    Determinism fix            :p01, 0, 1
-    Ingest the archive         :p02, after p01, 2
-    Re-capture the gaps        :p03, after p02, 2
+    Close determinism gaps     :p01, 0, 1
+    Re-capture the archive     :p02, after p01, 2
+    Ingest into the platform   :p03, after p02, 2
     section Phase 1 · scope
     Workflow taxonomy          :p11, 0, 3
     Benchmark definition       :p12, 0, 3

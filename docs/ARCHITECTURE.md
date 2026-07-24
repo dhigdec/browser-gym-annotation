@@ -182,39 +182,57 @@ asks *did you check the price*, which is unanswerable from the final world.
 > **trajectory-evaluated milestone predicates**. About 82% happen to be satisfiable
 > from end state alone; 18% are not, by design.
 
-### 3.4 Determinism — and where it is currently broken
+### 3.4 Determinism
 
-Reproducibility is the property everything else rests on. Two mechanisms provide it:
+Reproducibility is the property everything else rests on. Three mechanisms provide
+it:
 
 1. **Seeded world construction.** `(task_id, seed)` fully determines the initial
-   world. Verified: two resets of the same task produce byte-identical worlds
-   (0 differing leaves).
-2. **A deterministic clock.** `server/apps/scheduler.py` — the clock *is* the step
-   counter. No wall-clock, no background threads. `POST /_harness/tick` advances it
-   and flushes due scheduled events; `POST /_harness/verify {step}` sets the
-   counter and evaluates the suite. Only **18 of 312** tasks schedule async events,
-   so ticking is conditional — ticking a task with an empty schedule corrupts its
-   world hash while delivering nothing.
+   world. Verified: two resets of the same task produce byte-identical worlds.
+2. **A deterministic clock.** `server/apps/scheduler.py` — the clock is a step
+   counter, not wall time. `POST /_harness/tick` advances it and flushes due
+   scheduled events; `POST /_harness/verify {step}` sets the counter and evaluates
+   the suite. Only **18 of 312** tasks schedule async events, so ticking is
+   conditional — ticking a task with an empty schedule changes its world hash while
+   delivering nothing.
+3. **Derived ids and timestamps** (`server/mutations.py`, commit `1865e80`).
+   `_new_id` is `blake2s(task|seed|prefix|step|sequence)` and `_now` is a fixed
+   epoch plus the step clock. Replaying the same action from the same state mints
+   the same id.
 
-**The known break:** `server/mutations.py::_new_id` is
-`f"{prefix}_{secrets.token_hex(4)}"`. Placing an order, filing a return or adding an
-address mints an id that cannot be reproduced — and that id is embedded in the order
-record, the confirmation email body, the tracking URL and the cross-app event
-payload. Every world from that action onward differs between runs.
+Verified end to end: two full oracle episodes of the same `(task, seed)` produce
+identical world hashes, including on order-placing tasks that mint order, shipment
+and subscription ids.
 
-Measured effect on replay of archived runs: the step at which a run's first random
-id appears predicts its reconstruction coverage exactly, five for five.
+#### Two residual gaps
 
-| Task | Steps | First random id | Worlds reconstructed |
-|---|---|---|---|
-| M57/birthday_errand | 17 | step 4 | 4 |
-| M41/ambiguous_return | 7 | step 6 | 6 |
-| M75/stale_gift_message | 8 | step 7 | 7 |
-| M47/phantom_duplicate | 11 | step 10 | 10 |
-| M70/mixed_basket_two_redirects | 14 | step 13 | 13 |
+**Wall-clock dates survive in two fields.** `mutations.py:521`
+(`estimated_delivery`) and `:651` (`next_delivery_date`) still call
+`datetime.now(timezone.utc)`, formatted with `.date().isoformat()`. Both land
+inside the hashed world.
 
-This is the deepest open issue in the system. See
-[Roadmap §1](./ROADMAP.md#phase-0--make-the-data-usable).
+Because they are *dates*, two runs minutes apart agree — which is why same-day
+testing shows nothing. Two runs either side of midnight do not. **Every stored
+golden containing an order or a subscription therefore stops replaying the day
+after it was captured.** This is the more dangerous shape of bug: invisible in
+testing, silently degrading over time.
+
+**Per-app id counters are not serialized.** `MailState._next` (and the food /
+calendar / market equivalents) appear in neither `to_json()` nor
+`statecodec._MUTABLE_SUBAPP`. After a mid-episode restore the counter restarts at
+its seed value, so the next minted id collides with an existing record and
+overwrites it. This affects checkpoint restore, not fresh runs.
+
+#### Why replaying the archive still fails
+
+The 4,760 archived runs in `trajectories/` were recorded **before** `1865e80`. They
+contain ids drawn from `secrets.token_hex`, which a deterministic gym will never
+reproduce — so replay-backfill against the old archive is capped no matter how
+correct the gym is now.
+
+That reframes the fix: the answer is **re-capture**, not further determinism work.
+And re-capture is now cheap, because a deterministic oracle run is free and
+reproducible. See [Roadmap Phase 0](./ROADMAP.md#phase-0--make-the-data-usable).
 
 ### 3.5 The harness
 
@@ -471,7 +489,7 @@ port; the port is what workspace isolation uses.
 Tests:
 
 ```bash
-cd backend  && .venv/bin/python -m pytest -q      # 393 passing
+cd backend  && .venv/bin/python -m pytest -q      # 397 passing
 cd frontend && npm run test                        # 160 passing
 ```
 
@@ -522,7 +540,9 @@ zero model cost. Measured across all 315 archived tasks in one pass:
 | Tasks partly covered | 203 |
 | Tasks not covered | 21 |
 
-The 40% shortfall is dominated by the random-id problem (§3.4), not by the clock.
+The 40% shortfall is dominated by the archive predating the determinism fix
+(§3.4) — those runs contain ids today's gym will never reproduce — not by the
+clock. It is recovered by re-capturing, not by further work on the gym.
 
 Full detail: [`docs/preflight-world-trail.md`](./preflight-world-trail.md).
 
@@ -549,7 +569,8 @@ them here so they are not propagated:
 | "234 tasks in the gym" | gym `README.md` | **312** registered in the live registry |
 | Verifiers "never read the URL" | gym `README.md` | **50 of 284 suites** read `p.url`/`active_tab_url`. The claim is false as stated |
 | "End-state verifiers" | annotator `README.md`, meeting notes | **Trajectory-evaluated**, sticky milestones. 82% are also end-state-satisfiable; 18% are not |
-| "M57 fails because of the scheduled-event clock" | earlier preflight notes | M57 has an **empty schedule queue**. Its failure is the random-id problem |
+| "M57 fails because of the scheduled-event clock" | earlier preflight notes | M57 has an **empty schedule queue**. It fails because its archived run predates the determinism fix |
+| "Determinism is broken; `_new_id` uses `secrets.token_hex`" | the first draft of *this document*, 2026-07-24 | Wrong. `1865e80` had already replaced it with `blake2s(task\|seed\|prefix\|step\|seq)` before that draft was written. Two full oracle episodes of one `(task, seed)` produce identical worlds. What is stale is the **archive**, not the gym — see §3.4 |
 
 None of these change what the system does — they change how we describe it, which
 matters most when a partner team is building on our description.
