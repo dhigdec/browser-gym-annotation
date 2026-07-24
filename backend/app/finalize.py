@@ -24,7 +24,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app import checkpoints, models, replay, versions
+from app import backfill, checkpoints, models, replay, versions
 
 
 class NotApproved(RuntimeError):
@@ -75,7 +75,6 @@ def finalize(
     gym,
     scorer: Scorer,
     annotator_id: UUID | None = None,
-    kind: str = "golden",
     task_external_id: str = "",
     require_replay: bool = True,
 ) -> dict:
@@ -102,13 +101,18 @@ def finalize(
         # from the task's own starting conditions.
         if gym.reset(task_external_id, attempt.seed) is None:
             raise replay.ReplayRejected(0, "could not reset the task for a clean replay")
+        # Whether this task schedules async events is read off the gym's own seed
+        # world, right after the reset that produced it — the same decision the
+        # backfill makes, from the same source, so a trajectory reconstructed with
+        # a tick is replayed with one.
+        scheduled = backfill.scheduled_events(gym.world() if hasattr(gym, "world") else None) > 0
         result = replay.replay(
             actions, executor,
             expected_hashes=[a["expectedHash"] for a in actions],
             # The clean replay must reproduce the RECORDING's protocol, clock and
             # all. Without the tick the replayed world trails by one step and a
             # correct trajectory is rejected as diverged.
-            clock=replay.advance_clock(gym),
+            clock=replay.advance_clock(gym, scheduled=scheduled),
             strict=True,
         )
 
@@ -117,6 +121,14 @@ def finalize(
         db, attempt_id=attempt.id, world=final_world, step_clock=len(actions),
     )
     reward, results = scorer.score(suite, final_world)
+    overridden: list[str] = []  # v2 has no override path yet; the rule is here so adding one cannot forget it
+
+    # The sample's kind is DERIVED, never named by the caller. The legacy path
+    # derives it (api/sessions.py) precisely so a reward reached by overriding a
+    # SAFETY verifier ships as `flagged` rather than as training gold — letting a
+    # client assert "golden" would drop that provenance silently, and this path
+    # could never produce `flagged` at all.
+    kind = _kind_for(suite, reward, overridden)
 
     run = models.BenchmarkRun(
         suite_id=suite.id, reward=reward, results=results,
@@ -141,6 +153,18 @@ def finalize(
         "finalCheckpointId": str(final_cp.id),
         "replayed": bool(result), "steps": len(actions),
     }
+
+
+def _kind_for(suite: models.VerifierSuite, reward: int, overridden: list[str]) -> str:
+    """golden | breaker | flagged, on the same rule the legacy path uses.
+
+    A run that only passes because a human forced a SAFETY check is not a clean
+    golden. The provenance has to ride on the sample, or an unsafe trajectory
+    ships as something to train on.
+    """
+    if any(v.ext_id in set(overridden or []) and v.level == "safety" for v in suite.verifiers):
+        return "flagged"
+    return "golden" if reward == 1 else "breaker"
 
 
 def freeze(

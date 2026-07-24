@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
-import { ACTION_COLOR, Button, Icon, t, weight } from "../../ds";
+import { ACTION_COLOR, Button, Icon, t, tint, weight } from "../../ds";
 import {
   adjudicate,
   autogenVerifiers,
@@ -24,7 +24,7 @@ import {
   fetchSessionHistory,
 } from "../../lib/api";
 import { parseStateEdits } from "../../lib/gymEdits";
-import { continuingAfter, rejecting } from "../../lib/versionsApi";
+import { continuingAfter, FORK_COPY, headOf, rejecting, type VersionNode } from "../../lib/versionsApi";
 import type { AutogenResult, HistoryRound, QaSubmission, QaTaskRow } from "../../lib/api";
 import type { ReviewData, Step, TaskListItem, Verifier } from "../../lib/types";
 import {
@@ -120,13 +120,73 @@ export function ReviewSurface({ view, session, attemptId, owner, replay }: {
 }
 
 /**
+ * Which correction system an attempt is on.
+ *
+ * There is exactly one per attempt and it is decided by the DATA, never by a
+ * preference: an attempt with TrajectoryVersion rows corrects through the
+ * version graph, one without keeps the retired path it was started on. Rewriting
+ * an in-flight attempt's history would be worse than carrying two code paths, so
+ * nothing here migrates anything.
+ *
+ * "unknown" is a real third answer, not a placeholder. The lineage is read over
+ * the network, and treating "not answered yet" as "no versions" is exactly how
+ * the retired Submit gets painted onto a versioned attempt for as long as the
+ * GET takes — which is the bug this whole change exists to remove.
+ */
+export type CorrectionPath = "unknown" | "versions" | "legacy";
+
+export interface Lineage {
+  path: CorrectionPath;
+  /** The version the attempt would ship. Null until one is selected. */
+  head: VersionNode | null;
+}
+
+const NO_LINEAGE_YET: Lineage = { path: "unknown", head: null };
+
+/** Everything an annotator needs to work the version path without asking
+ *  somebody, in the same words the buttons use (FORK_COPY), so the explanation
+ *  cannot drift away from the controls it explains. */
+function VersionPathGuide({ head }: { head: VersionNode | null }) {
+  const v = head ? `v${head.versionNo}` : "the version you select";
+  // Only the first letter: the fork hints are two sentences each, and lowercasing
+  // the lot would restart the second one in lower case.
+  const joined = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
+  const line = (n: string, text: string) => (
+    <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+      <span style={{ flexShrink: 0, fontFamily: t.fontMono, fontSize: "0.6875rem", fontWeight: weight.bold, color: t.primary6, width: 12 }}>{n}</span>
+      <span style={{ fontSize: "0.719rem", lineHeight: 1.5, color: t.n2 }}>{text}</span>
+    </div>
+  );
+  return (
+    <div style={{ background: t.n9, border: `1px solid ${t.n7}`, borderRadius: t.radiusXl, boxShadow: t.shadowMd, padding: "12px 16px", display: "flex", flexDirection: "column", gap: 7 }}>
+      <span style={{ fontSize: "0.8125rem", fontWeight: weight.bold, color: t.n1 }}>How this attempt is corrected and shipped</span>
+      {line("1", "Read a version's steps and mark each one Verified or Wrong. A verdict sticks to the step, so it follows that step into every branch that keeps it.")}
+      {line("2", `“${FORK_COPY.before.action}” ${joined(FORK_COPY.before.hint)} “${FORK_COPY.after.action}” ${joined(FORK_COPY.after.hint)} Either way the version you forked from is left exactly as it was.`)}
+      {line("3", `Make the branch you want to ship the HEAD, then approve it. Head is the attempt's answer${head ? ` — right now that is ${v}` : " — nothing holds it yet"}.`)}
+      {line("4", `Finalize (step 3 below) replays ${v} from a clean start, scores the saved verifier suite against the world that replay ends in, and freezes the three together as the sample. Only ${v} ships.`)}
+    </div>
+  );
+}
+
+/**
  * The attempt's version lineage, under the run it annotates.
  *
  * The graph re-reads itself after every fork and every compare-and-swap; both
  * hooks live here rather than in ReviewScreen so that traffic cannot re-render
- * the replay pane, whose surface is measured on each render.
+ * the replay pane, whose surface is measured on each render. What DOES travel
+ * upward is one small `Lineage` — the screen has to know which correction path
+ * to render, and only this panel knows.
  */
-export function LineagePanel({ sessionId, isGym }: { sessionId: string | null; isGym: boolean }) {
+export function LineagePanel({ sessionId, sessionSettled = true, isGym, onLineage }: {
+  sessionId: string | null;
+  /** Has the open ANSWERED? Not the same as whether it produced a session. While
+   *  it is still in flight, "no session" must not be read as "no versions" — that
+   *  paints the retired legacy controls onto a versioned attempt for the whole
+   *  duration of the opening POST, which is the exact window this closes. */
+  sessionSettled?: boolean;
+  isGym: boolean;
+  onLineage?: (l: Lineage) => void;
+}) {
   const versions = useVersionGraph(sessionId);
   const steps = useVersionSteps(sessionId, versions.viewingId);
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
@@ -136,49 +196,84 @@ export function LineagePanel({ sessionId, isGym }: { sessionId: string | null; i
   // lineage to read and nothing to fork from. `ensureBaseline` is idempotent, so
   // opening a gym session asks for it rather than guessing whether one exists.
   const baselinedRef = useRef<string | null>(null);
+  // Baselining is a WRITE that decides the attempt's path, so its result is
+  // owed to the screen above before that screen renders either path.
+  const [baselinePending, setBaselinePending] = useState(false);
   useEffect(() => {
     if (!sessionId || !isGym || baselinedRef.current === sessionId) return;
     baselinedRef.current = sessionId;
-    void versions.baseline();
+    setBaselinePending(true);
+    void versions.baseline().finally(() => setBaselinePending(false));
   }, [sessionId, isGym, versions.baseline]);
+
+  // A SUCCESSFUL read of an empty lineage still hands back a graph object, so
+  // `graph !== null` is exactly "the server has answered". Timing cannot say it:
+  // `loading` goes true and false again inside a single React batch when the
+  // response resolves in the same tick (measured — the flag never renders as
+  // true), so a screen keyed off it would decide the attempt's correction path
+  // from how fast the network happened to be.
+  const graph = versions.graph;
+  const path: CorrectionPath = !sessionId
+    ? sessionSettled
+      ? "legacy" // the open answered and there is no session — offline or a fixture
+      : "unknown" // still opening; a guess here reinstates the retired path
+    : graph === null
+      ? "unknown" // unread — and a lineage we cannot read is not one to guess at
+      : graph.versions.length > 0
+        ? "versions"
+        : baselinePending
+          ? "unknown" // v1 is being written right now; the answer is a moment away
+          : "legacy"; // read, empty, and nothing here migrates it
+
+  const head = headOf(graph);
+  useEffect(() => {
+    onLineage?.({ path, head });
+    // `head` is a fresh object on every graph read and reporting it re-renders
+    // the parent; depending on the object (or on an inline callback) would spin.
+    // The primitives below are what actually change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onLineage, path, head?.id, head?.status, head?.versionNo, head?.stepCount]);
 
   const viewed = versions.graph?.versions.find((v) => v.id === viewing) ?? null;
   const versionNos = Object.fromEntries((versions.graph?.versions ?? []).map((v) => [v.id, v.versionNo]));
 
   return (
-    <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-      <div style={{ width: 340, flexShrink: 0 }}>
-        <VersionGraph
-          graph={versions.graph}
-          viewingId={viewing}
-          notice={versions.notice}
-          busyVersionId={versions.busyVersionId}
-          onView={versions.view}
-          onSelectHead={versions.selectHead}
-          onSetStatus={versions.setStatus}
-          onDismissNotice={versions.dismissNotice}
-          onCreateBaseline={sessionId ? () => void versions.baseline() : undefined}
-        />
-      </div>
-      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 8 }}>
-        {steps.error && (
-          <span style={{ fontSize: "0.72rem", color: t.redDark, fontWeight: weight.semibold }}>{steps.error}</span>
-        )}
-        <VersionSteps
-          version={viewed}
-          steps={steps.steps}
-          loading={steps.loading}
-          versionNos={versionNos}
-          selectedStepId={selectedStepId}
-          busyStepId={steps.busyStepId}
-          onSelectStep={(id) => setSelectedStepId((cur) => (cur === id ? null : id))}
-          onVerdict={steps.verdict}
-          // Two named commands, never one mode argument: fork-before REJECTS the
-          // step (it is absent from the child), fork-after KEEPS it. Transposing
-          // them still yields a plausible-looking golden trajectory.
-          onRejectStep={(s) => (viewing ? versions.fork(rejecting(viewing, s.stepId)) : undefined)}
-          onContinueAfter={(s) => (viewing ? versions.fork(continuingAfter(viewing, s.stepId)) : undefined)}
-        />
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {path === "versions" && <VersionPathGuide head={head} />}
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+        <div style={{ width: 340, flexShrink: 0 }}>
+          <VersionGraph
+            graph={versions.graph}
+            viewingId={viewing}
+            notice={versions.notice}
+            busyVersionId={versions.busyVersionId}
+            onView={versions.view}
+            onSelectHead={versions.selectHead}
+            onSetStatus={versions.setStatus}
+            onDismissNotice={versions.dismissNotice}
+            onCreateBaseline={sessionId ? () => void versions.baseline() : undefined}
+          />
+        </div>
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+          {steps.error && (
+            <span style={{ fontSize: "0.72rem", color: t.redDark, fontWeight: weight.semibold }}>{steps.error}</span>
+          )}
+          <VersionSteps
+            version={viewed}
+            steps={steps.steps}
+            loading={steps.loading}
+            versionNos={versionNos}
+            selectedStepId={selectedStepId}
+            busyStepId={steps.busyStepId}
+            onSelectStep={(id) => setSelectedStepId((cur) => (cur === id ? null : id))}
+            onVerdict={steps.verdict}
+            // Two named commands, never one mode argument: fork-before REJECTS the
+            // step (it is absent from the child), fork-after KEEPS it. Transposing
+            // them still yields a plausible-looking golden trajectory.
+            onRejectStep={(s) => (viewing ? versions.fork(rejecting(viewing, s.stepId)) : undefined)}
+            onContinueAfter={(s) => (viewing ? versions.fork(continuingAfter(viewing, s.stepId)) : undefined)}
+          />
+        </div>
       </div>
     </div>
   );
@@ -209,6 +304,161 @@ function SaveBadge({ sessionId, status }: { sessionId: string | null; status: st
       <span style={{ width: 7, height: 7, borderRadius: t.radiusFull, background: color, boxShadow: saved ? `0 0 0 3px ${t.greenLite}` : "none" }} />
       {saved ? `Autosaved · ${STATUS_LABEL[status] ?? status}` : "Not saved (offline)"}
     </span>
+  );
+}
+
+// --------------------------------------------------------------------------- shipping a version
+
+/** What finalize hands back (backend/app/finalize.py:138-143). */
+interface ShipResult {
+  submissionId: string;
+  versionId: string;
+  reward: number;
+  steps: number;
+  replayed: boolean;
+}
+
+/** FastAPI's `detail` is a string on finalize's refusals but an OBJECT on the
+ *  replay rejection (backend/app/api/versions.py:281-284). Rendering the object
+ *  raw prints "[object Object]" over the one message that names the step which
+ *  failed — the only part of it an annotator can act on. */
+function refusalText(body: unknown, status: number): string {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  if (typeof detail === "string" && detail) return detail;
+  if (detail && typeof detail === "object") {
+    const d = detail as { error?: string; reason?: string; at?: number };
+    const parts = [d.error, d.reason].filter(Boolean);
+    // `at` indexes ACTIONS from zero; every step list an annotator reads is
+    // numbered from one, so quoting it raw sends them to the wrong step.
+    if (parts.length) return d.at != null ? `${parts.join(" — ")} (at step ${d.at + 1})` : parts.join(" — ");
+  }
+  return `Finalize failed (${status}) — nothing was shipped.`;
+}
+
+/**
+ * Ship one version — POST /api/sessions/{id}/finalize (backend/app/api/versions.py:248).
+ *
+ * Deliberately not routed through lib/api's `post`, which collapses every
+ * failure into null. Finalize's refusals ARE the product: "needs a QC-approved
+ * version" and "does not replay cleanly, at step N" are two different jobs for
+ * the annotator, and a null turns both into a button that appears to do nothing.
+ */
+async function shipVersion(
+  sessionId: string,
+  versionId: string,
+  kind: string,
+): Promise<{ ok: true; value: ShipResult } | { ok: false; message: string }> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/finalize`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ versionId, kind }),
+    });
+  } catch {
+    return { ok: false, message: "Could not reach the server — nothing was shipped." };
+  }
+  const body = await res.json().catch(() => null);
+  if (!res.ok) return { ok: false, message: refusalText(body, res.status) };
+  return { ok: true, value: body as ShipResult };
+}
+
+/**
+ * The one way an attempt with a version graph ships.
+ *
+ * It replaces "Approve & submit to dataset", which built its golden from the
+ * recorded run and could therefore ship a step the annotator had rejected. The
+ * copy names the version, the replay and the freeze, because "Finalize v2" means
+ * nothing to somebody who has never read the schema — and every reason it cannot
+ * run yet is written as the thing to go and do.
+ */
+function FinalizeDock({ sessionId, head, benchmarkRun, kind, alreadyShipped, onShipped }: {
+  sessionId: string | null;
+  head: VersionNode | null;
+  /** The benchmark has been run. Doubles as "a suite exists server-side":
+   *  `runBenchmark` SAVES the suite before scoring it, and finalize refuses
+   *  (409) an attempt with no suite to score against. */
+  benchmarkRun: boolean;
+  kind: string;
+  alreadyShipped: boolean;
+  onShipped: (r: ShipResult) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [shipped, setShipped] = useState<ShipResult | null>(null);
+
+  const v = head ? `v${head.versionNo}` : "this version";
+  const blocker = !sessionId
+    ? "This attempt was never saved — the backend is offline, so there is nothing to ship."
+    : !head
+      ? "No version is the head yet. In Version lineage above, open the branch you want to ship and press “Make it the head”."
+      : head.status !== "approved"
+        ? `${v} is the head, but nobody has approved it. Approve it in Version lineage above — finalize refuses a version no reviewer signed off.`
+        : !benchmarkRun
+          ? "No suite has been scored yet. Run the benchmark in step 2 above — that is what saves the suite finalize scores against."
+          : null;
+
+  const shell = { background: t.n9, border: `1px solid ${t.n7}`, borderRadius: t.radiusXl, boxShadow: t.shadowMd, padding: "16px 22px", display: "flex", flexDirection: "column" as const, gap: 12 };
+
+  if (shipped || alreadyShipped) {
+    return (
+      <div style={shell}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: "0.875rem", fontWeight: weight.bold, color: t.greenDark }}>
+          <Icon name="check" size={16} stroke={2.4} color={t.greenDark} /> Shipped — this attempt is frozen and can no longer be edited.
+        </span>
+        {shipped && (
+          <span style={{ fontSize: "0.78rem", lineHeight: 1.5, color: t.n2 }}>
+            Sample <span style={{ fontFamily: t.fontMono, fontSize: "0.74rem" }}>{shipped.submissionId}</span> · {shipped.steps} step{shipped.steps === 1 ? "" : "s"} · reward {shipped.reward} ·{" "}
+            {shipped.replayed ? "replayed from a clean start before scoring" : "scored without a replay"}.
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={shell}>
+      <span style={{ fontSize: "0.875rem", fontWeight: weight.bold, color: t.n0 }}>Ship {v} as this attempt's sample</span>
+      <span style={{ fontSize: "0.8rem", lineHeight: 1.55, color: t.n2, maxWidth: 720 }}>
+        Finalizing replays {v}&apos;s {head?.stepCount ?? 0} step{(head?.stepCount ?? 0) === 1 ? "" : "s"} from a clean start — not from a saved checkpoint — scores the saved verifier
+        suite against the world that replay ends in, and freezes the trajectory, the suite and the score together. Only {v} ships: steps you
+        rejected are not in it, and no other branch is included.
+      </span>
+      {blocker ? (
+        <span style={{ fontSize: "0.78rem", lineHeight: 1.5, fontWeight: weight.semibold, color: t.n1, background: tint(t.yellow, 14), padding: "9px 12px", borderRadius: t.radiusLg }}>{blocker}</span>
+      ) : (
+        <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+          <Button
+            variant="primary"
+            disabled={busy}
+            style={{ minHeight: 44 }}
+            onClick={async () => {
+              if (!sessionId || !head) return;
+              setBusy(true);
+              setError(null);
+              const res = await shipVersion(sessionId, head.id, kind);
+              setBusy(false);
+              if (!res.ok) {
+                setError(res.message);
+                return;
+              }
+              setShipped(res.value);
+              onShipped(res.value);
+            }}
+          >
+            {busy ? `Replaying ${v}…` : `Replay ${v} and ship it as the sample`}
+          </Button>
+          <span style={{ fontSize: "0.74rem", lineHeight: 1.5, color: t.n3, maxWidth: 420 }}>
+            Produces one frozen sample: the golden trajectory, the suite version it was scored with, the reward that scoring gave it, and the
+            world it ended on. Nothing about it can be edited afterwards.
+          </span>
+        </div>
+      )}
+      {error && (
+        <span style={{ fontSize: "0.78rem", lineHeight: 1.5, fontWeight: weight.semibold, color: t.redDark }}>{error}</span>
+      )}
+    </div>
   );
 }
 
@@ -244,6 +494,19 @@ export function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: Revi
   const [state, dispatch] = useReducer(reducer, data, makeInitialState);
   const [correcting, setCorrecting] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  // Whether the open has ANSWERED, which is not the same as whether it produced a
+  // session. Without this, "no session yet" is indistinguishable from "no session
+  // exists", and the retired legacy controls paint onto a versioned attempt for
+  // the whole duration of the opening POST — the precise window this retirement
+  // exists to close.
+  const [sessionSettled, setSessionSettled] = useState(false);
+  // Which correction system this attempt is on, reported by the lineage panel.
+  // It starts UNKNOWN and no correction UI of either kind renders until it is
+  // answered: guessing "legacy" would show the retired Submit on a versioned
+  // attempt, which is the exact failure being retired here.
+  const [lineage, setLineage] = useState<Lineage>(NO_LINEAGE_YET);
+  const versioned = lineage.path === "versions";
+  const legacy = lineage.path === "legacy";
   const [promptOverride, setPromptOverride] = useState<string | null>(null);
   const [driving, setDriving] = useState<null | "queued" | "running">(null);
   const [driveError, setDriveError] = useState<string | null>(null);
@@ -284,7 +547,9 @@ export function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: Revi
   useEffect(() => {
     let alive = true;
     openSession(data.task.id, { fresh: startFresh }).then((snap) => {
-      if (!alive || !snap) return;
+      if (!alive) return;
+      setSessionSettled(true);
+      if (!snap) return;
       setSessionId(snap.sessionId);
       const results = (snap.lastBenchmark?.results as Record<string, string>) ?? {};
       // Reconstruct the annotator's AUTHORED suite from the persisted latest
@@ -522,19 +787,24 @@ export function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: Revi
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <PaneToggle view={pane} opening={liveOpening} onReplay={showReplay} onLive={() => void showLive()} />
             <SaveBadge sessionId={sessionId} status={status} />
-            {sessionId && state.rerunFrom != null && (
+            {/* Every control below writes (or replays) a legacy correction
+                branch, which no version can contain and finalize cannot ship.
+                On a versioned attempt they are absent rather than disabled: an
+                annotator who can see a control they must not use still has to
+                ask somebody why. */}
+            {legacy && sessionId && state.rerunFrom != null && (
               <span onClick={() => setShowHistory(true)} title="Every correction round you made on this task"
                 style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, background: t.n9, color: t.n1, fontSize: "0.75rem", fontWeight: weight.semibold, cursor: "pointer", whiteSpace: "nowrap" }}>
                 ⟲ Iterations
               </span>
             )}
-            {data.source === "gym" && data.gymResume && (
+            {legacy && data.source === "gym" && data.gymResume && (
               <span onClick={() => setEditingState(true)} title="Edit the world state and re-verify against the gym"
                 style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: t.radiusLg, border: `1px solid ${t.n6}`, background: t.n9, color: t.primary6, fontSize: "0.75rem", fontWeight: weight.semibold, cursor: "pointer", whiteSpace: "nowrap" }}>
                 ✎ Edit state
               </span>
             )}
-            {data.source === "gym" && data.gymResume && (
+            {legacy && data.source === "gym" && data.gymResume && (
               <span
                 onClick={driving ? undefined : async () => {
                   // Continue the task from where it stopped: drive the live agent
@@ -595,7 +865,10 @@ export function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: Revi
                   correcting={correcting}
                   correctionSeed={current.type === "error" ? data.correctionSeed : current.description}
                   onVerify={() => dispatch({ t: "verifyStep" })}
-                  onStartCorrect={() => setCorrecting(true)}
+                  // Verifying a step is common to both paths; CORRECTING one is
+                  // not — on a versioned attempt that happens by forking the
+                  // version, so the old editor is not offered at all.
+                  onStartCorrect={legacy ? () => setCorrecting(true) : undefined}
                   onCancelCorrect={() => setCorrecting(false)}
                   onSaveCorrect={async (text) => {
                     setCorrecting(false);
@@ -706,8 +979,26 @@ export function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: Revi
             per-step verdicts. It sits with the trace it describes rather than
             behind a modal — deciding which version is the attempt's answer is
             part of reviewing the run, not a separate errand. */}
-        <div style={{ padding: "16px 16px 0" }}>
-          <LineagePanel sessionId={sessionId} isGym={data.source === "gym"} />
+        <div style={{ padding: "16px 16px 0", display: "flex", flexDirection: "column", gap: 12 }}>
+          {/* Rounds recorded on the retired path before this attempt was
+              versioned. They belong to no version, so finalize cannot ship them
+              — saying so is the only honest thing to do with work that is
+              already in the database and cannot be migrated. */}
+          {versioned && state.rerunFrom != null && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: tint(t.yellow, 14), border: `1px solid ${t.n7}`, borderRadius: t.radiusLg }}>
+              <Icon name="alert" size={14} color={t.yellowDark} style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1, fontSize: "0.75rem", lineHeight: 1.5, color: t.n1 }}>
+                This attempt also has correction rounds recorded on the retired path, from step {state.rerunFrom}. They are part of no
+                version, so finalizing will not ship them — the lineage below is what ships.
+              </span>
+              {sessionId && (
+                <span onClick={() => setShowHistory(true)} style={{ flexShrink: 0, fontSize: "0.72rem", fontWeight: weight.semibold, color: t.primary6, cursor: "pointer", whiteSpace: "nowrap" }}>
+                  Read those rounds
+                </span>
+              )}
+            </div>
+          )}
+          <LineagePanel sessionId={sessionId} sessionSettled={sessionSettled} isGym={data.source === "gym"} onLineage={setLineage} />
         </div>
       </div>
 
@@ -736,9 +1027,38 @@ export function ReviewScreen({ data, nav, startFresh, onStartNew }: { data: Revi
           onEditVerifier={(id, assertion, code) => dispatch({ t: "editVerifier", id, assertion, code })}
           onOverride={(id) => dispatch({ t: "override", id })}
           onRun={runBenchmark}
-          onSubmit={handleSubmit}
+          // The legacy submit ships the RECORDED run plus a branch, so on a
+          // versioned attempt it could ship a step the annotator rejected. It is
+          // not offered there; step 3 below is.
+          onSubmit={legacy ? handleSubmit : undefined}
+          submitNote={
+            versioned
+              ? "This attempt has a version lineage — ship it in step 3 below, which binds the version, this suite and the score together."
+              : lineage.path === "unknown"
+                ? "Reading this attempt's version lineage…"
+                : undefined
+          }
         />
       </div>
+
+      {versioned && (
+        <div style={{ padding: "8px 16px 24px" }}>
+          <SectionHeader n={3} title="Ship the approved version" subtitle="Replays it from a clean start, scores the saved suite, and freezes all three together." done={state.submitted} />
+          <FinalizeDock
+            sessionId={sessionId}
+            head={lineage.head}
+            benchmarkRun={state.benchmarkRun}
+            kind={reward(state) === 1 ? "golden" : "breaker"}
+            alreadyShipped={state.submitted || status === "submitted"}
+            onShipped={(r) => {
+              // The server has frozen the sample; mirror that into the screen so
+              // the rest of it locks the same way a legacy submit locks it.
+              submittedRef.current = true;
+              dispatch({ t: "submitConfirmed", reward: r.reward, kind: r.reward === 1 ? "golden" : "breaker" });
+            }}
+          />
+        </div>
+      )}
 
       {autogenResult && <AutogenPanel result={autogenResult} onClose={() => setAutogenResult(null)} />}
       {showHistory && sessionId && <IterationHistory sessionId={sessionId} onClose={() => setShowHistory(false)} />}

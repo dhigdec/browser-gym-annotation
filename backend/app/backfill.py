@@ -35,6 +35,10 @@ Two strengths of evidence exist, because the archive is not uniform:
   304 tasks). Cart/order/return/subscription counts and the acting user are
   compared instead. That is a real check against recorded data, but a coarser
   one, so it is opt-in: the default accepts world evidence only.
+
+Step 3 has a second half that only some tasks need — the deterministic clock. See
+:func:`scheduled_events`: whether to tick is decided from the gym's OWN seed
+world, per task, because it is a loss in both directions if guessed.
 """
 
 from __future__ import annotations
@@ -67,6 +71,14 @@ NONE = ""
 
 # Weakest last. Accepting at SNAPSHOT also accepts WORLD, never the reverse.
 _RANK = {WORLD: 2, SNAPSHOT: 1, NONE: 0}
+
+# How the deterministic clock is driven. AUTO is the only setting an operator
+# should normally use; the other two exist so the decision can be MEASURED
+# against a task rather than argued about. See `scheduled_events`.
+TICK_AUTO = "auto"
+TICK_ON = "on"
+TICK_OFF = "off"
+TICK_MODES = (TICK_AUTO, TICK_ON, TICK_OFF)
 
 # The snapshot fields that describe STATE. `step` and `finished` are deliberately
 # excluded: older captures serialized the snapshot by reference to a mutable
@@ -190,6 +202,45 @@ def start_url(run: ArchivedRun, gym_url: str) -> str:
     rest = recorded.partition("://")[2]
     _, slash, path = rest.partition("/")
     return base + slash + path
+
+
+# --------------------------------------------------------------------------- the clock
+def scheduled_events(seed_world: dict | None) -> int:
+    """How many async events this task has queued to fire on the deterministic
+    clock, read off the gym's OWN seed world.
+
+    This is the whole tick decision, and it has to be read from the live gym at
+    reset rather than inferred from the archive, because ticking is a LOSS in
+    both directions and each direction was measured:
+
+    * **A task with a schedule, not ticked.** ``POST /_harness/tick`` is the only
+      thing that calls ``scheduler.advance_and_flush`` (``server/main.py``
+      ``harness_tick``), and that is the only thing that delivers a due event.
+      Measured on the live gym: M15/inbox_price_watch reset, then six
+      ``/_harness/verify`` calls and no tick — ``schedule.pending`` stays 2 and
+      ``events`` stays empty. Its price-drop mail, due at step 4, never arrives,
+      so every world from step 4 on is missing an email the recording has.
+    * **A task with NO schedule, ticked anyway.** ``advance_and_flush`` assigns
+      ``sched.now = step`` before it looks at the queue, so an empty queue still
+      moves the clock — and ``ScheduleState.to_json`` puts ``now`` in the world,
+      which ``checkpoints.hash_world`` hashes. Measured: A1/buy_wireless_mouse
+      ticked six times changes exactly one thing, ``schedule.now`` 0 → 6, and
+      that alone is enough to fail every comparison. This is what took M40 from
+      3/3 worlds to 1/3 when the tick was applied unconditionally: only step 0
+      survived, because ``advance_and_flush`` treats ``step <= now`` as a no-op.
+
+    18 of the gym's 312 tasks answer >0 here.
+    """
+    queue = ((seed_world or {}).get("schedule") or {}).get("queue") or []
+    return sum(1 for entry in queue if not entry.get("fired"))
+
+
+def _tick_decision(mode: str, seed_world: dict | None) -> bool:
+    if mode == TICK_ON:
+        return True
+    if mode == TICK_OFF:
+        return False
+    return scheduled_events(seed_world) > 0
 
 
 def pick(paths: list[Path]) -> ArchivedRun | None:
@@ -396,6 +447,11 @@ class Reconstruction:
     # Set when NOTHING from this run may be written — a refusal is about the whole
     # episode (wrong task revision, dead gym), not one step.
     refused: str = ""
+    # What the clock did, and why. Reported rather than assumed: a run replayed
+    # with the wrong answer here diverges from its first scheduled step onward,
+    # and the audit has to be able to say which of the two it chose.
+    scheduled: int = 0
+    ticked: bool = False
 
     @property
     def executed(self) -> int:
@@ -430,7 +486,7 @@ def reconstruct(
     executor: Executor,
     *,
     accept: str = WORLD,
-    tick: bool = False,
+    tick: str = TICK_AUTO,
     expected_seed_world: dict | None = None,
 ) -> Reconstruction:
     """Replay one archived episode and report, per step, whether the world it
@@ -441,13 +497,17 @@ def reconstruct(
     one is correct regardless of how the replay got there — and on the measured
     runs three tasks recovered more worlds than they executed actions.
 
-    `tick` advances the gym's deterministic clock before each action, the way
-    ``harness/runner.py`` does at the start of every agent turn. It is OFF by
-    default, and measured against the live gym it is currently a LOSS at both
-    ends: M40 drops from 3/3 worlds to 1/3, and M57 — the scheduled-event task
-    the flag exists for — drops from 4/17 to 1/17. So the flag is a hook for
-    deriving the real rule from an instrumented live run, not a fix; see the known
-    gaps in docs/preflight-world-trail.md.
+    `tick` drives the gym's deterministic clock. AUTO — the default, and the only
+    setting with a defensible answer for an arbitrary task — asks the gym's own
+    seed world whether this task schedules anything (:func:`scheduled_events`) and
+    ticks only then. ON and OFF force it, for measuring a task rather than
+    trusting the rule.
+
+    The tick goes BEFORE the action and carries the index of the step about to
+    run, matching ``harness/runner.py``'s ``tick()``: it fires at the start of the
+    turn with ``step = len(trajectory.steps)``, i.e. the count of steps ALREADY
+    recorded. Ticking after the action instead would deliver a step-4 email into
+    the world that step 4 was recorded to have produced without it.
     """
     out = Reconstruction(run=run)
     if not run.steps:
@@ -466,6 +526,9 @@ def reconstruct(
         out.refused = "the gym's seed world is not the one this task was captured against"
         return out
 
+    out.scheduled = scheduled_events(out.seed_world)
+    out.ticked = _tick_decision(tick, out.seed_world)
+
     for i, st in enumerate(run.steps):
         outcome = StepOutcome(idx=i, kind=str(st.get("action_kind") or ""))
         action = to_action(st)
@@ -474,7 +537,7 @@ def reconstruct(
             out.steps.append(outcome)
             continue
         outcome.locator = action["locator"]
-        if tick:
+        if out.ticked:
             gym.tick(i)
         res = executor.act(action["kind"], action["locator"], action["args"]) or {}
         outcome.executed = bool(res.get("ok"))
@@ -737,6 +800,10 @@ def apply(db: Session, recon: Reconstruction) -> WriteReport:
             "steps": len(recon.steps), "executed": recon.executed, "accepted": recon.accepted,
             "worldEvidence": recon.by_evidence(WORLD), "snapshotEvidence": recon.by_evidence(SNAPSHOT),
             "imported": report.imported, "conflicts": report.conflicts,
+            # Provenance: a world reconstructed with the clock running is a
+            # different artefact from one reconstructed without it, and an
+            # operator auditing a suspect trail must be able to tell which.
+            "scheduledEvents": recon.scheduled, "ticked": recon.ticked,
         },
     ))
     db.flush()
@@ -805,6 +872,11 @@ def audit_row(recon: Reconstruction) -> dict:
         "snapshotEvidence": recon.by_evidence(SNAPSHOT),
         "unreplayable": sum(1 for s in recon.steps if not s.executed and "not replayable" in s.error),
         "refused": recon.refused,
+        # Reported per task, not per batch: the clock is decided from each task's
+        # own seed world, so a batch-level "ticking was on" would be a lie about
+        # every task in it that has no schedule.
+        "scheduledEvents": recon.scheduled,
+        "ticked": recon.ticked,
     }
 
 
@@ -816,6 +888,8 @@ def summarize(rows: list[dict]) -> dict:
     return {
         "tasks": len(rows),
         "refused": sum(1 for r in rows if r["refused"]),
+        "scheduledTasks": sum(1 for r in rows if r.get("scheduledEvents")),
+        "ticked": sum(1 for r in rows if r.get("ticked")),
         "steps": steps,
         "executed": sum(r["executed"] for r in rows),
         "accepted": accepted,

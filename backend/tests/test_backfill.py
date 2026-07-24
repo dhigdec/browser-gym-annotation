@@ -25,21 +25,62 @@ TASK = "M40/bogus_pricematch"
 
 
 # --------------------------------------------------------------------------- fakes
-def world_at(step: int, orders: list[str]) -> dict:
-    """The world the fake gym reports after `step` actions. Mirrors the real one
-    in the way that matters here: the step counter is part of the world, so the
-    /_harness/verify call that sets it is load-bearing rather than decorative."""
-    return {"task_id": TASK, "seed": 0, "step": step, "shop": {"orders": list(orders)}}
+PRICE_DROP = "em_pricedrop"
+
+
+def scheduled(at: int, *, fired_at: int | None = None) -> dict:
+    """One entry of the gym's schedule queue, shaped as ``ScheduleState.to_json``
+    writes it (server/apps/scheduler.py). A price-drop email due at step ``at``."""
+    return {
+        "id": "se_pricedrop", "emit_type": "PriceDropAlert", "fire_at_step": at,
+        "after_event_type": None, "delay_steps": 0,
+        "fired": fired_at is not None, "fired_at_step": -1 if fired_at is None else fired_at,
+    }
+
+
+def world_at(step: int, orders: list[str], *, clock: int = 0,
+             mail: tuple[str, ...] = (), queue: tuple[dict, ...] = ()) -> dict:
+    """The world the fake gym reports after `step` actions.
+
+    Mirrors the real one in the two ways that decide this module's behaviour.
+    The step counter is part of the world, so the /_harness/verify call that sets
+    it is load-bearing rather than decorative. And so is `schedule.now`:
+    ``WorldState.to_json`` embeds the whole ScheduleState, which means the
+    deterministic clock is inside the hash `checkpoints.hash_world` computes — a
+    clock moved when the recording's was not is a mismatch on its own.
+    """
+    entries = list(queue)
+    return {
+        "task_id": TASK, "seed": 0, "step": step,
+        "shop": {"orders": list(orders)},
+        "mail": {"inbox": list(mail)},
+        "schedule": {
+            "now": clock, "queue": entries,
+            "pending": sum(1 for e in entries if not e["fired"]),
+        },
+    }
 
 
 class FakeGym:
-    """A gym whose world only moves when the executor moves it."""
+    """A gym whose world only moves when the executor moves it — or when the
+    clock is ticked.
 
-    def __init__(self, seed_world: dict | None = None):
+    `tick` reproduces ``server/apps/scheduler.py::advance_and_flush`` rather than
+    merely recording the call, because the two behaviours that make the tick
+    decision hard both live in that function and an inert fake would hide them:
+
+    * ``sched.now = step`` runs BEFORE the queue is consulted, so ticking a task
+      with nothing scheduled still changes the world.
+    * ``step <= sched.now`` returns early, so the tick at step 0 does nothing at
+      all — which is why an over-eager tick leaves exactly the first step intact.
+    """
+
+    def __init__(self, seed_world: dict | None = None, trace: list | None = None):
         self.seed = seed_world or world_at(0, [])
         self.state = copy.deepcopy(self.seed)
         self.verified: list[tuple[str, int]] = []
         self.ticks: list[int] = []
+        self.trace = trace if trace is not None else []
         self.reachable = True
 
     def reset(self, task_id: str, seed: int) -> dict | None:
@@ -50,12 +91,54 @@ class FakeGym:
 
     def verify(self, url: str, step: int) -> dict:
         self.verified.append((url, step))
+        self.trace.append(("verify", step))
         self.state["step"] = step
         return {"score": 0.0}
 
     def tick(self, step: int) -> dict:
         self.ticks.append(step)
-        return {"now": step}
+        self.trace.append(("tick", step))
+        sched = self.state["schedule"]
+        if step <= sched["now"]:
+            return {"now": sched["now"], "fired": []}
+        sched["now"] = step
+        fired = []
+        for entry in sorted(sched["queue"], key=lambda e: e["id"]):
+            if entry["fired"] or step < entry["fire_at_step"]:
+                continue
+            entry["fired"] = True
+            entry["fired_at_step"] = step
+            self.state["mail"]["inbox"].append(PRICE_DROP)
+            fired.append(entry["id"])
+        sched["pending"] = sum(1 for e in sched["queue"] if not e["fired"])
+        return {"now": step, "fired": fired}
+
+    def load_state(self, task_id: str, seed: int, state: dict, step: int | None = None) -> dict:
+        """The READ side of a checkpoint, as ``server/main.py::harness_load_state``
+        performs it: reset to the seed baseline, overlay the captured snapshot,
+        then set the step counter from the request — NOT from the snapshot.
+
+        The overlay is selective, and modelled selectively here so that a
+        restore can still fail. ``statecodec.apply_snapshot`` copies the mutable
+        app stores and the event log, and takes exactly ``now`` and ``queue`` from
+        the schedule (``_overlay(world.schedule, sched_json, ["now", "queue"])``);
+        ``pending`` is derived on the way out by ``ScheduleState.to_json``.
+        Everything it does not name stays at seed. A fake that copied the whole
+        world back would agree with any checkpoint ever written, including one
+        whose clock the restore path silently rewound.
+        """
+        self.state = copy.deepcopy(self.seed)
+        for key in ("shop", "mail", "events"):
+            if key in state:
+                self.state[key] = copy.deepcopy(state[key])
+        if isinstance(state.get("schedule"), dict):
+            sched = self.state["schedule"]
+            sched["now"] = state["schedule"]["now"]
+            sched["queue"] = copy.deepcopy(state["schedule"]["queue"])
+            sched["pending"] = sum(1 for e in sched["queue"] if not e["fired"])
+        if step is not None:
+            self.state["step"] = step
+        return {"ok": True, "task_id": task_id, "seed": seed}
 
     def world(self) -> dict:
         return copy.deepcopy(self.state)
@@ -81,6 +164,7 @@ class FakeExecutor:
 
     def act(self, kind: str, locator: dict | None, args: dict | None) -> dict:
         target = (locator or {}).get("testId") or (locator or {}).get("name") or ""
+        self.gym.trace.append(("act", target))
         if target in self.absent:
             return {"ok": False, "error": "no element matched the locator"}
         self.performed.append((kind, dict(locator or {})))
@@ -117,8 +201,9 @@ def archived(steps: list[dict], *, task_id: str = TASK, path: str = "M40_bogus_p
     )
 
 
-def replay(run: backfill.ArchivedRun, *, effects=None, absent=None, accept=backfill.WORLD, **kw):
-    gym = FakeGym()
+def replay(run: backfill.ArchivedRun, *, effects=None, absent=None, accept=backfill.WORLD,
+           seed_world=None, **kw):
+    gym = FakeGym(seed_world)
     ex = FakeExecutor(gym, effects=effects, absent=absent)
     return backfill.reconstruct(run, gym, ex, accept=accept, **kw), gym, ex
 
@@ -187,6 +272,115 @@ def test_the_seed_world_disagreeing_refuses_the_entire_run():
     )
     assert recon.refused
     assert recon.steps == [], "nothing is replayed once the starting state is known to be wrong"
+
+
+# --------------------------------------------------------------------------- the clock
+#
+# 18 of the gym's 312 tasks seed a schedule queue; the other 294 do not. Ticking
+# is a loss in whichever direction is wrong, so the decision is made per task from
+# the gym's own seed world. These tests pin both directions and the ordering.
+
+def _scheduled_run() -> backfill.ArchivedRun:
+    """Four steps of a task whose price-drop email is due at step 2 — recorded, as
+    the harness recorded it, with the clock running."""
+    q_wait, q_done = (scheduled(2),), (scheduled(2, fired_at=2),)
+    return archived([
+        click("btn-a", world=world_at(0, [], clock=0, queue=q_wait)),
+        click("btn-b", world=world_at(1, [], clock=1, queue=q_wait)),
+        click("btn-c", world=world_at(2, [], clock=2, mail=(PRICE_DROP,), queue=q_done)),
+        click("btn-d", world=world_at(3, [], clock=3, mail=(PRICE_DROP,), queue=q_done)),
+    ])
+
+
+def _scheduled_seed() -> dict:
+    return world_at(0, [], queue=(scheduled(2),))
+
+
+def test_scheduled_events_counts_only_the_entries_still_waiting_to_fire():
+    """The whole tick decision reduces to this number, so it must not be fooled by
+    a queue whose events have all already been delivered, or by the many tasks
+    whose seed world carries no schedule at all."""
+    assert backfill.scheduled_events(_scheduled_seed()) == 1
+    assert backfill.scheduled_events(world_at(0, [], queue=(scheduled(2, fired_at=2),))) == 0
+    assert backfill.scheduled_events(world_at(0, [])) == 0
+    assert backfill.scheduled_events({}) == 0
+    assert backfill.scheduled_events(None) == 0
+
+
+def test_a_task_that_schedules_nothing_is_replayed_with_the_clock_left_alone():
+    """294 of the 312 tasks are this case. The clock must stay where the recording
+    left it, and no operator should have to know that."""
+    run = archived([click("a", world=world_at(0, [])), click("b", world=world_at(1, []))])
+    recon, gym, _ = replay(run)
+    assert recon.ticked is False and recon.scheduled == 0
+    assert gym.ticks == [], "a task with no schedule was ticked anyway"
+    assert recon.accepted == 2
+
+
+def test_forcing_the_clock_onto_a_task_that_schedules_nothing_destroys_its_trail():
+    """The regression that made the old unconditional --tick wrong, as a test.
+
+    `advance_and_flush` assigns `sched.now = step` before it looks at the queue,
+    and the world hash covers `schedule.now`, so an empty queue is no protection.
+    Measured against the live gym on M40/bogus_pricematch: 3 of 3 worlds became 1
+    of 3. Only step 0 survives, because `step <= sched.now` makes tick(0) a no-op.
+    """
+    run = archived([
+        click("a", world=world_at(0, [])),
+        click("b", world=world_at(1, [])),
+        click("c", world=world_at(2, [])),
+    ])
+    recon, gym, _ = replay(run, tick=backfill.TICK_ON)
+    assert gym.ticks == [0, 1, 2]
+    assert recon.accepted == 1, "only the step whose tick was a no-op still matched"
+    assert recon.steps[0].accepted and not recon.steps[1].accepted
+
+
+def test_a_task_whose_events_fire_on_the_clock_is_ticked_for_every_step():
+    """The case the flag was added for. The email due at step 2 is in the recorded
+    world from step 2 on, and nothing but the tick puts it there."""
+    recon, gym, _ = replay(_scheduled_run(), seed_world=_scheduled_seed())
+    assert recon.ticked is True and recon.scheduled == 1
+    assert gym.ticks == [0, 1, 2, 3]
+    assert recon.accepted == 4
+
+
+def test_without_the_clock_a_scheduled_event_never_arrives_and_the_trail_stops():
+    """Measured on the live gym: M15/inbox_price_watch reset, then six
+    /_harness/verify calls and no tick leaves `schedule.pending` at 2 and `events`
+    empty — its price-drop mail, due at step 4, simply never lands. POST
+    /_harness/tick is the only caller of `advance_and_flush` (server/main.py,
+    `harness_tick`), so a replay that skips it can never reach those worlds."""
+    recon, gym, _ = replay(_scheduled_run(), seed_world=_scheduled_seed(), tick=backfill.TICK_OFF)
+    assert gym.ticks == []
+    assert recon.accepted == 1, "the clock never moved, so every step after the first diverged"
+
+
+def test_the_clock_is_ticked_before_the_action_carrying_the_index_of_that_step():
+    """`harness/runner.py::tick` fires at the START of the turn with
+    `step = len(trajectory.steps)` — the count of steps ALREADY recorded, which is
+    this step's own index. Ticking after the action instead would deliver the
+    step-2 email into the world that step 2 was recorded to have produced without
+    it, and every remaining step would then be checked against a shifted trail."""
+    trace: list = []
+    gym = FakeGym(_scheduled_seed(), trace=trace)
+    backfill.reconstruct(_scheduled_run(), gym, FakeExecutor(gym))
+    assert trace[:6] == [
+        ("tick", 0), ("act", "btn-a"), ("verify", 0),
+        ("tick", 1), ("act", "btn-b"), ("verify", 1),
+    ]
+
+
+def test_the_clock_decision_is_read_from_the_gyms_seed_world_not_from_the_archive():
+    """An archived run cannot answer this. Older captures serialized no schedule at
+    all, and a run produced by an agent that never ticked records `schedule.now: 0`
+    for a task that very much has one — so reading the answer out of the recording
+    would tick precisely the tasks that must not be, and skip the ones that must."""
+    run = archived([click("btn-a", snapshot={"current_user_id": "u_alice", "orders_count": 0})])
+    run.payload["steps"][0]["world_after"] = {"task_id": TASK, "step": 0, "shop": {"orders": []}}
+    recon, gym, _ = replay(run, seed_world=_scheduled_seed(), accept=backfill.SNAPSHOT)
+    assert recon.scheduled == 1, "the queue was read off the gym's reset, not off the file"
+    assert gym.ticks == [0]
 
 
 # --------------------------------------------------------------------------- evidence levels
@@ -378,6 +572,33 @@ def test_a_world_that_could_not_be_verified_is_never_written(db_session):
     assert disputed.trajectory.raw["gymResume"]["worldTrail"][1] == world_at(1, ["ORD-1"])
 
 
+def test_a_scheduled_tasks_checkpoint_restores_into_a_gym_with_its_event_delivered(db_session):
+    """The round trip, not the artefact: write the checkpoint, then RESTORE it.
+
+    `checkpoints.restore` reloads the world into a gym and re-hashes what comes
+    back, so this fails if the clock does not survive the trip in either
+    direction. It is the check that matters for scheduled tasks, because the
+    thing an annotator forks back to is a world in which the price-drop email has
+    already arrived — restoring one without it hands them the wrong task."""
+    gym = FakeGym(_scheduled_seed())
+    recon = backfill.reconstruct(_scheduled_run(), gym, FakeExecutor(gym))
+    backfill.apply(db_session, recon)
+    db_session.commit()
+
+    steps = db_session.scalars(select(models.TrajectoryStep).order_by(models.TrajectoryStep.idx)).all()
+    before = db_session.get(models.EnvironmentCheckpoint, steps[2].before_checkpoint_id)
+    after = db_session.get(models.EnvironmentCheckpoint, steps[2].after_checkpoint_id)
+
+    assert checkpoints.restore(after, gym, task_id=TASK, seed=0) is True
+    assert gym.world()["mail"]["inbox"] == [PRICE_DROP], "the delivered event came back with the world"
+    assert gym.world()["schedule"]["now"] == 2
+
+    # And the fork point one action earlier is the world BEFORE it arrived, so the
+    # two are genuinely different restore points rather than the same state twice.
+    assert checkpoints.restore(before, gym, task_id=TASK, seed=0) is True
+    assert gym.world()["mail"]["inbox"] == []
+
+
 def test_a_run_with_nothing_verifiable_writes_nothing_at_all(db_session):
     recon = _replayed(steps=[click("btn-a", world=world_at(0, ["NEVER"]))])
     report = backfill.apply(db_session, recon)
@@ -519,6 +740,15 @@ def _load_cli():
 
 
 @pytest.fixture()
+def scheduled_archive_dir(tmp_path):
+    """An archive of the task whose price-drop email is due at step 2."""
+    (tmp_path / "M40_bogus_pricematch__0__sched.jsonl").write_text(
+        json.dumps(_scheduled_run().payload)
+    )
+    return tmp_path
+
+
+@pytest.fixture()
 def cli(_session_factory):
     """The real CLI, wired to fakes at the ONE seam it has: how it connects to a
     gym and a browser. Everything else — argument parsing, task selection, the
@@ -530,21 +760,25 @@ def cli(_session_factory):
     # happens to be run from backend/ — the suite passed there and errored from
     # the repo root, which is where CI runs it.
     cli_mod = _load_cli()
+    made: dict = {}
 
-    def connect(args):
-        gym = FakeGym()
+    def run(argv, *, seed_world=None):
+        def connect(args):
+            gym = FakeGym(seed_world)
+            made["gym"] = gym
 
-        @contextlib.contextmanager
-        def executor(initial_url):
-            assert initial_url == "http://localhost:8000/market", \
-                "the session must open at the run's OWN start URL, not the app root"
-            yield FakeExecutor(gym, effects={"btn-refund": ["ORD-1"]})
+            @contextlib.contextmanager
+            def executor(initial_url):
+                assert initial_url == "http://localhost:8000/market", \
+                    "the session must open at the run's OWN start URL, not the app root"
+                yield FakeExecutor(gym, effects={"btn-refund": ["ORD-1"]})
 
-        return gym, executor
+            return gym, executor
 
-    def run(argv):
         return cli_mod.main(argv, connect=connect, sessions=_session_factory)
 
+    run.made = made
+    run.module = cli_mod
     return run
 
 
@@ -552,7 +786,8 @@ def test_audit_reports_coverage_and_writes_nothing(cli, archive_dir, db_session,
     assert cli(["audit", "--archive", str(archive_dir), "--json"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["summary"] == {
-        "tasks": 1, "refused": 0, "steps": 2, "executed": 2, "accepted": 2,
+        "tasks": 1, "refused": 0, "scheduledTasks": 0, "ticked": 0,
+        "steps": 2, "executed": 2, "accepted": 2,
         "worldEvidence": 2, "snapshotEvidence": 0,
         "tasksFullyCovered": 1, "tasksPartlyCovered": 0, "tasksUncovered": 0, "coverage": 1.0,
     }
@@ -578,3 +813,31 @@ def test_backfill_with_write_persists_the_verified_steps(cli, archive_dir, db_se
 def test_a_task_filter_that_matches_nothing_replays_nothing(cli, archive_dir, capsys):
     assert cli(["audit", "--archive", str(archive_dir), "--task", "M99/not_here", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["summary"]["tasks"] == 0
+
+
+def test_the_clock_needs_no_flag_and_is_decided_task_by_task(cli, scheduled_archive_dir, capsys):
+    """Asserted from `main()`, not from the parser, because a default that is only
+    correct in `build_parser` is a default nothing reaches: the same wiring gap
+    once let 25 tests pass while every route 404d. An operator who has never heard
+    of the clock must get the scheduled task ticked and everything else not."""
+    assert cli(["audit", "--archive", str(scheduled_archive_dir), "--json"],
+               seed_world=_scheduled_seed()) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["tasks"][0]["scheduledEvents"] == 1
+    assert out["tasks"][0]["ticked"] is True
+    assert out["summary"]["scheduledTasks"] == 1 and out["summary"]["ticked"] == 1
+    assert out["summary"]["accepted"] == 4, "the whole trail, with no flag typed"
+    assert cli.made["gym"].ticks == [0, 1, 2, 3]
+
+
+def test_the_clock_can_be_forced_off_for_a_task_to_measure_it(cli, scheduled_archive_dir, capsys):
+    """Both overrides exist so the rule can be MEASURED against a task rather than
+    argued about — which is how the automatic rule was derived in the first place.
+    Forcing it off is the before-picture: the same run loses everything but step 0."""
+    assert cli(["audit", "--archive", str(scheduled_archive_dir), "--tick", "off", "--json"],
+               seed_world=_scheduled_seed()) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert cli.made["gym"].ticks == []
+    assert out["summary"]["accepted"] == 1
+    assert out["tasks"][0]["scheduledEvents"] == 1, \
+        "the task still reports its schedule — the override changes what is done, not what is true"

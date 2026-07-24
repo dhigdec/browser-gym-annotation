@@ -17,6 +17,11 @@ coverage numbers can be REFRESHED from a command rather than restated as a claim
 Requires a running gym (`HARNESS_TOKEN` provisioned) and the live browser service.
 `--accept snapshot` also keeps steps verified only against the recorded
 cart/order/return counts — a real check, a coarser one; see app/backfill.py.
+
+The deterministic clock needs no flag: `--tick auto` is the default and asks each
+task's own seed world whether it schedules async events. `--tick on` / `--tick
+off` force it, which is only useful for measuring one task against the other
+answer — forcing it across a batch is wrong for whichever half does not match.
 """
 
 from __future__ import annotations
@@ -91,10 +96,14 @@ def _print_rows(rows: list[dict], summary: dict) -> None:
     for r in rows:
         flag = "ok  " if r["accepted"] == r["steps"] else ("part" if r["accepted"] else "none")
         note = f"  REFUSED {r['refused']}" if r["refused"] else ""
+        # The clock is per task, so it belongs on the task's own line. A tick
+        # column that only appeared in the summary would read as a batch-wide
+        # setting, which is exactly the misreading that made --tick wrong before.
+        clock = f" clock+{r['scheduledEvents']}" if r.get("ticked") else ""
         print(
             f"{flag} {r['taskId']:<48} world {r['accepted']}/{r['steps']}"
             f"  executed {r['executed']}/{r['steps']}"
-            f"  [w{r['worldEvidence']} s{r['snapshotEvidence']} x{r['unreplayable']}]{note}"
+            f"  [w{r['worldEvidence']} s{r['snapshotEvidence']} x{r['unreplayable']}]{clock}{note}"
         )
     print(f"\nreplayed {summary['tasks']} tasks: {json.dumps(summary)}")
 
@@ -164,8 +173,9 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("--limit", type=int, help="cap the number of tasks replayed")
         s.add_argument("--accept", choices=[backfill.WORLD, backfill.SNAPSHOT], default=backfill.WORLD,
                        help="strength of evidence a step must carry to be kept (default: world)")
-        s.add_argument("--tick", action="store_true",
-                       help="advance the deterministic clock before each action (scheduled-event tasks)")
+        s.add_argument("--tick", choices=backfill.TICK_MODES, default=backfill.TICK_AUTO,
+                       help="deterministic clock: auto ticks only the tasks whose seed world "
+                            "schedules async events (default); on/off force it, for measuring")
         s.add_argument("--gym", default=settings.gym_url)
         s.add_argument("--token", default=settings.gym_harness_token)
         s.add_argument("--live", default=settings.live_browser_url)

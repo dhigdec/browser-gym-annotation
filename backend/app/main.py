@@ -1,12 +1,15 @@
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import Callable
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-from app import models  # noqa: F401 — register ORM models on Base
+from app import agent_runs, jobs, models, workspace  # noqa: F401 — also registers ORM models on Base
 from app.auth import current_annotator
 from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
@@ -52,6 +55,45 @@ def _assert_prod_safe() -> None:
         raise RuntimeError("refusing to start in prod: " + "; ".join(problems))
 
 
+def _reconcile_after_restart() -> None:
+    """Nothing that was in flight when this process last stopped has an owner now.
+
+    The backend tracks what it spawned in the DATABASE rather than in memory
+    (app/workspace/manager.py, app/jobs.py), so a restart leaves rows describing a
+    world that no longer exists: leases still marked "ready" whose gym process is
+    gone — `endpoint_for()` keeps handing those endpoints out and the provider's
+    terminate() never runs on them — and jobs still marked running that no thread
+    is executing. Neither failure announces itself; they surface later as a leaked
+    process, or as a result that simply never arrives.
+
+    Guarded per step, and guarded the same way the schema bootstrap is: a database
+    that is down at boot degrades the API, it does not stop it from serving.
+    """
+
+    def _step(name: str, fn: Callable[[Session], int]) -> None:
+        try:
+            from app.db import SessionLocal
+
+            with SessionLocal() as db:
+                n = fn(db)
+                db.commit()
+            log.info("restart reconcile — %s: %s", name, n)
+        except Exception as e:  # noqa: BLE001
+            log.warning("restart reconcile — %s failed (%s); stale rows remain", name, e)
+
+    # Leases first: until this runs, every gym call routed through `endpoint_for`
+    # can be handed the address of a process that died with the last boot.
+    _step("workspace leases adopted", workspace.reconcile_on_startup)
+    # Cutoff = now, because at boot every in-flight run's worker is gone by
+    # definition — this process started none of them. `reap_stale` owns BOTH
+    # shapes (running past its heartbeat, and queued with nobody to pick it up)
+    # and refunds each as infrastructure, so a restart never costs an annotator
+    # one of their capped runs. Deliberately not re-implemented here: a second
+    # copy of a reap rule is how the four canonical-run resolvers drifted.
+    _step("agent runs reaped", lambda db: agent_runs.reap_stale(db, older_than=datetime.utcnow()))
+    _step("background jobs orphaned", jobs.store.recover_orphans)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # Fail closed BEFORE serving a single request when prod is misconfigured.
@@ -71,6 +113,9 @@ async def lifespan(_: FastAPI):
         log.info("db ready — catalog seeded %s", info)
     except Exception as e:  # noqa: BLE001
         log.warning("db bootstrap issue (%s) — serving fixtures only", e)
+    # After the schema exists and before the first request: reclaim what the
+    # previous boot left behind.
+    _reconcile_after_restart()
     yield
 
 

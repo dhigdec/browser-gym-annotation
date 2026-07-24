@@ -165,3 +165,55 @@ def test_restoring_to_the_wrong_world_is_caught_by_the_hash(db_session, checkpoi
     with pytest.raises(checkpoints.DivergenceError):
         replay.restore_and_replay(checkpoint, _actions("btn-cart"), ex, gym, task_id="M40/x", seed=0)
     assert ex.performed == []
+
+
+# --------------------------------------------------------------------------- the scheduled clock
+class ClockGym:
+    """Models the real harness: /_harness/verify sets the step counter, and
+    /_harness/tick is the ONLY thing that delivers a due scheduled event
+    (server/main.py harness_tick -> scheduler.advance_and_flush)."""
+
+    def __init__(self):
+        self.ticks: list[int] = []
+        self.verifies: list[int] = []
+
+    def tick(self, step=0):
+        self.ticks.append(step)
+        return {"now": step}
+
+    def verify(self, step=0):
+        self.verifies.append(step)
+        return {"success": True}
+
+
+def test_a_scheduled_task_ticks_as_well_as_verifies():
+    """THE FIFTH instance of one bug shape. The backfill reconstructs the 18
+    scheduled tasks WITH a tick, so a replay that cannot tick can never reproduce
+    what it wrote — and GymEndpoint had no tick method at all."""
+    gym = ClockGym()
+    clock = replay.advance_clock(gym, scheduled=True)
+    clock(0)
+    clock(1)
+    assert gym.ticks == [0, 1], "the async event only arrives if the clock is advanced"
+    assert gym.verifies == [0, 1]
+
+
+def test_a_task_with_nothing_scheduled_does_not_tick():
+    """Unconditional ticking is a measured regression: advance_and_flush assigns
+    sched.now before consulting the queue and `now` is inside the hashed world, so
+    a tick with nothing to deliver corrupts every comparison (47/60 -> 5/60)."""
+    gym = ClockGym()
+    replay.advance_clock(gym, scheduled=False)(0)
+    assert gym.ticks == [] and gym.verifies == [0]
+
+
+def test_a_gym_without_a_tick_still_replays():
+    """The shared gym client gained tick late; a workspace that predates it must
+    degrade to verify-only rather than crash a finalize."""
+    class OnlyVerify:
+        def __init__(self): self.seen = []
+        def verify(self, step=0): self.seen.append(step)
+
+    gym = OnlyVerify()
+    replay.advance_clock(gym, scheduled=True)(3)
+    assert gym.seen == [3]

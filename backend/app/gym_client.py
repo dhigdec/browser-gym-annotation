@@ -191,6 +191,17 @@ class GymEndpoint:
     def verify(self, step: int = 0) -> dict | None:
         return _req("POST", "/_harness/verify", {"step": step}, base_url=self.base_url)
 
+    def tick(self, step: int = 0) -> dict | None:
+        """Advance the deterministic clock and flush any now-due scheduled event.
+
+        This is the ONLY thing that calls scheduler.advance_and_flush, so without
+        it a task with a schedule never receives its async email or price change
+        — and every world from that step on is missing something the recording
+        has. The backfill ticks when it reconstructs those tasks; a replay that
+        cannot tick could never reproduce what the backfill wrote.
+        """
+        return _req("POST", "/_harness/tick", {"step": step}, base_url=self.base_url)
+
     def load_state(self, task_id: str, seed: int, state: dict, step: int | None = None) -> dict | None:
         body: dict = {"task_id": task_id, "seed": seed, "state": state}
         if step is not None:

@@ -40,6 +40,12 @@ services:
       # name. host.docker.internal is meaningful only inside this container.
       GYM_HOST_FOR_BROWSER: ${GYM_HOST_FOR_BROWSER:-localhost}
       GYM_HARNESS_TOKEN: ${GYM_HARNESS_TOKEN:-}
+      # Rerun cap (§3.9): three agent runs per ATTEMPT, then the annotator
+      # finishes by hand — the path tests/test_e2e_correction_loop.py walks end to
+      # end. Set here rather than in app/config.py so running from source stays
+      # uncapped: capping reruns anywhere the manual fallback has not been
+      # exercised strands whoever hits it. AGENT_RUN_CAP=0 turns it back off.
+      AGENT_RUN_CAP: ${AGENT_RUN_CAP:-3}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

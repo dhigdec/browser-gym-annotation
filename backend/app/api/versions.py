@@ -242,7 +242,9 @@ class GymScorer:
 class FinalizeBody(BaseModel):
     versionId: UUID
     suiteId: UUID | None = None
-    kind: str = "golden"
+    # `kind` is deliberately NOT accepted. It is derived server-side from the
+    # score and the overridden verifiers, so a client cannot label a run that
+    # only passed by overriding a safety check as clean training gold.
 
 
 @router.post("/sessions/{session_id}/finalize")
@@ -273,7 +275,7 @@ def finalize_attempt(
     try:
         out = finalize.finalize(
             db, attempt=s, version=v, suite=suite, executor=live, gym=endpoint,
-            scorer=GymScorer(endpoint), annotator_id=current.id, kind=body.kind,
+            scorer=GymScorer(endpoint), annotator_id=current.id,
             task_external_id=task.external_id if task else "",
         )
     except finalize.NotApproved as exc:

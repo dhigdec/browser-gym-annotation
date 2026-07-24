@@ -142,11 +142,43 @@ class LocalProcessRuntimeProvider:
         return _harness_ok(handle.endpoint)
 
     def terminate(self, handle: WorkspaceHandle) -> None:
-        """Best-effort reclaim. Terminating an already-dead pid must not raise —
-        the reaper calls this for leases whose process may be long gone."""
+        """Best-effort reclaim, but never on a pid we cannot prove is ours.
+
+        A lease row outlives the process it names and the OS recycles pids, so a
+        number stored yesterday may belong to something else entirely today. The
+        reaper calls this for exactly those rows, which makes an unverified kill
+        a signal sent to an arbitrary process by coincidence — and it is
+        reachable from a plain `pytest` run, because the startup reconciler walks
+        every lease in whatever database happens to be configured.
+
+        So the pid must still look like the gym server this provider spawned
+        before it gets a signal. When that cannot be established the process is
+        LEFT ALONE: a leaked gym costs memory and is recoverable, whereas killing
+        somebody else's process is not.
+        """
         try:
             pid = int(handle.external_ref)
         except (TypeError, ValueError):
             return
+        if pid <= 1 or not self._is_our_gym(pid):
+            return
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             os.kill(pid, 15)  # SIGTERM
+
+    @staticmethod
+    def _is_our_gym(pid: int) -> bool:
+        """Does this pid still look like a gym server we started?
+
+        Read from the OS rather than trusted from the row, because the row is
+        exactly what has gone stale. An unreadable command line answers NO — the
+        entire point is to refuse when we cannot tell.
+        """
+        try:
+            out = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        cmd = (out.stdout or "").strip()
+        return "uvicorn" in cmd and "server.main:app" in cmd

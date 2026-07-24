@@ -1,3 +1,4 @@
+import { render, screen, waitFor } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -13,11 +14,14 @@ import {
   setStatusOrReload,
   startAgentRun,
   withVerdicts,
+  type AgentRunJob,
+  type RunsData,
   type VersionGraphData,
   type VersionNode,
   type VersionStep,
 } from "../../lib/versionsApi";
-import { VersionGraph } from "./VersionGraph";
+import { LineagePanel } from "../task-review/TaskReview";
+import { MANUAL_FALLBACK, runBudget, VersionGraph } from "./VersionGraph";
 import { VersionSteps } from "./VersionSteps";
 
 // --------------------------------------------------------------------------- harness
@@ -72,6 +76,24 @@ const step = (over: Partial<VersionStep> & { stepId: string; displayIdx: number 
   humanIntent: "",
   guidance: "",
   verdict: "pending",
+  ...over,
+});
+
+const job = (over: Partial<AgentRunJob> = {}): AgentRunJob => ({
+  id: "J1",
+  status: "done",
+  sourceVersionId: "V1",
+  resultVersionId: "V2",
+  countsAgainstCap: true,
+  error: "",
+  createdAt: "2026-07-23T00:00:00",
+  ...over,
+});
+
+const runs = (over: Partial<RunsData> = {}): RunsData => ({
+  agentCallCount: 1,
+  cap: 3,
+  runs: [job()],
   ...over,
 });
 
@@ -283,6 +305,101 @@ describe("the head version", () => {
       />,
     );
     expect(html).toContain("moved on while you were looking at it");
+  });
+});
+
+// --------------------------------------------------------------------------- the run budget
+describe("the agent-run budget", () => {
+  const panel = (data: RunsData | null) =>
+    renderToStaticMarkup(
+      <VersionGraph
+        graph={graph()}
+        runs={data}
+        viewingId="V2"
+        notice={null}
+        onView={() => {}}
+        onSelectHead={() => {}}
+        onSetStatus={() => {}}
+        onDismissNotice={() => {}}
+      />,
+    );
+
+  it("shows what is left before a run is spent, not after one is refused", () => {
+    expect(panel(runs())).toContain("2 of 3 agent runs left");
+  });
+
+  it("counts a run that is still in flight as already spent", () => {
+    // The server reserves a queued job (backend/app/agent_runs.py `spent`), so a
+    // panel that only subtracted LANDED runs would offer a run and then watch the
+    // next click come back 429 — and a number that behaves like that gets ignored.
+    const inFlight = runs({ runs: [job(), job({ id: "J2", status: "running", resultVersionId: "V3" })] });
+
+    expect(runBudget(inFlight)).toEqual({ cap: 3, left: 1, reserved: 1, refunded: 0 });
+    const html = panel(inFlight);
+    expect(html).toContain("1 of 3 agent runs left");
+    expect(html).toContain("still going and already counted");
+  });
+
+  it("does not count a run that failed on our side, and says so", () => {
+    // An annotator who thinks a gym outage burned one of their three runs has no
+    // reason to believe the other two either.
+    const outage = runs({
+      agentCallCount: 1,
+      runs: [job(), job({ id: "J2", status: "error", countsAgainstCap: false, error: "gym unreachable" })],
+    });
+
+    expect(runBudget(outage)).toEqual({ cap: 3, left: 2, reserved: 0, refunded: 1 });
+    const html = panel(outage);
+    expect(html).toContain("2 of 3 agent runs left");
+    expect(html).toContain("failed on our side and was not counted");
+  });
+
+  it("names the manual path when the budget is gone, instead of only refusing", () => {
+    const html = panel(runs({ agentCallCount: 3 }));
+
+    expect(html).toContain("No agent runs left");
+    expect(html).toContain(MANUAL_FALLBACK);
+    expect(html).toMatch(/reject the step/i);
+    expect(html).toMatch(/commit your own actions/i);
+  });
+
+  it("warns on the last one, while it can still be spent deliberately", () => {
+    expect(panel(runs({ agentCallCount: 2 }))).toContain("This is the last one");
+  });
+
+  it("says nothing at all when no cap is configured", () => {
+    // Default OFF. Rendering 0-of-nothing would tell every annotator on an
+    // uncapped deployment that they are out of runs.
+    expect(runBudget(runs({ cap: null }))).toBeNull();
+    expect(panel(runs({ cap: null }))).not.toMatch(/agent runs? left/);
+    expect(panel(null)).not.toMatch(/agent runs? left/);
+  });
+
+  it("never shows a negative budget when the count has already passed the cap", () => {
+    expect(runBudget(runs({ agentCallCount: 5 }))?.left).toBe(0);
+  });
+});
+
+describe("the budget in the panel the app actually mounts", () => {
+  it("reaches the annotator through LineagePanel, without being passed in", async () => {
+    // A prop no mount ever passes is a feature that ships dead: TaskReview renders
+    // this panel with graph/steps handlers and no runs payload. So the number is
+    // read here, and this test renders the app's own component tree over stubbed
+    // HTTP rather than the leaf with a fixture handed to it.
+    const calls = stubFetch((c) => {
+      if (c.url.endsWith("/runs")) return { status: 200, body: runs() };
+      if (c.url.endsWith("/baseline")) return { status: 200, body: version({ id: "V1", versionNo: 1 }) };
+      if (c.url.endsWith("/versions")) return { status: 200, body: graph({ attemptId: "S1" }) };
+      return { status: 200, body: { versionId: "V1", versionNo: 1, steps: [] } };
+    });
+
+    render(<LineagePanel sessionId="S1" isGym />);
+
+    await waitFor(() => expect(screen.getByText("2 of 3 agent runs left")).toBeDefined());
+    expect(
+      calls.some((c) => c.url === "/api/sessions/S1/runs"),
+      "the budget is read for the attempt the panel is showing",
+    ).toBe(true);
   });
 });
 

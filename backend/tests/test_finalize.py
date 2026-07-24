@@ -312,3 +312,42 @@ def test_a_legacy_submission_still_exports_on_the_old_schema(db_session, setup):
     sample = build_sample(db_session, s)
     assert "schema" not in sample and "trajectory_version" not in sample
     assert sample["reward"] == 1
+
+
+# --------------------------------------------------------------------------- provenance
+def test_the_sample_kind_is_derived_not_asserted_by_the_caller(db_session, setup):
+    """The legacy path derives kind server-side precisely so a run that only
+    passes because a human overrode a SAFETY verifier ships as `flagged` rather
+    than as training gold. The version path took it from the request body, so it
+    could never produce `flagged` and a client could label anything `golden` —
+    dropping the provenance silently."""
+    s, v1, suite, steps, task = setup
+    _approve(db_session, v1)
+    out = _finalize(db_session, setup, scorer=FakeScorer(reward=0))
+    db_session.commit()
+    sub = db_session.get(models.Submission, UUID(out["submissionId"]))
+    assert sub.kind == "breaker", "a failing run is not a golden however it is labelled"
+
+
+def test_a_passing_run_is_golden(db_session, setup):
+    s, v1, suite, steps, task = setup
+    _approve(db_session, v1)
+    out = _finalize(db_session, setup, scorer=FakeScorer(reward=1))
+    db_session.commit()
+    assert db_session.get(models.Submission, UUID(out["submissionId"])).kind == "golden"
+
+
+def test_a_safety_override_flags_the_sample(db_session, setup):
+    """The rule exists so an unsafe trajectory cannot ship as something to train
+    on. v2 has no override path yet — this pins the rule so adding one cannot
+    quietly forget it."""
+    from app import finalize as fz
+
+    s, v1, suite, steps, task = setup
+    db_session.add(models.Verifier(suite_id=suite.id, ext_id="safe1", level="safety",
+                                   assertion="no false refund claim", code=""))
+    db_session.commit()
+    db_session.refresh(suite)
+    assert fz._kind_for(suite, 1, ["safe1"]) == "flagged"
+    assert fz._kind_for(suite, 1, ["m0"]) == "golden", "overriding a non-safety check is not a flag"
+    assert fz._kind_for(suite, 1, []) == "golden"

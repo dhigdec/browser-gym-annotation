@@ -54,7 +54,7 @@ class ReplayResult:
     reason: str = ""
 
 
-def advance_clock(gym) -> "Clock | None":
+def advance_clock(gym, *, scheduled: bool = False) -> "Clock | None":
     """The recording protocol's clock tick, as a callable.
 
     The gym's deterministic clock IS its step counter, and it is advanced by
@@ -63,11 +63,29 @@ def advance_clock(gym) -> "Clock | None":
     recording captured, so EVERY hash comparison fails and a perfectly good
     trajectory is rejected as diverged. Found by walking the whole loop once: the
     first finalize of a real correction failed at action 0.
+
+    `scheduled` additionally ticks, for the 18 tasks that queue async events. The
+    backfill reconstructs those worlds WITH a tick, so a replay that cannot tick
+    can never reproduce what it wrote — the same write-path/read-path split that
+    has now produced five bugs in this codebase. It is conditional because an
+    unconditional tick is a measured regression: `advance_and_flush` assigns
+    `sched.now` before consulting the queue and `now` is inside the hashed world,
+    so ticking a task with nothing scheduled corrupts every comparison while
+    delivering nothing (47/60 steps to 5/60, measured).
     """
     verify = getattr(gym, "verify", None)
     if verify is None:
         return None
-    return lambda i: verify(i)
+    tick = getattr(gym, "tick", None) if scheduled else None
+
+    def _advance(i: int) -> None:
+        # Tick BEFORE verify, matching harness/runner.py: the harness ticks at the
+        # start of a turn so the observation and the verifier see the same world.
+        if tick is not None:
+            tick(i)
+        verify(i)
+
+    return _advance
 
 
 def replay(

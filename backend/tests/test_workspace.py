@@ -215,3 +215,46 @@ def test_agent_workspace_falls_back_to_the_shared_gym_without_isolation(db_sessi
 
     with gym_api._agent_workspace(str(attempt.id)) as gym:
         assert gym is gym_client
+
+
+# --------------------------------------------------------------------------- kill safety
+def test_a_pid_that_is_not_our_gym_is_never_signalled(monkeypatch):
+    """A lease row outlives the process it names and the OS recycles pids, so the
+    number stored yesterday may belong to something else today. The reaper calls
+    terminate() for exactly those rows — and it is reachable from a plain pytest
+    run, because the startup reconciler walks every lease in whatever database is
+    configured. An unverified kill is a signal sent to a stranger."""
+    from app.workspace.provider import LocalProcessRuntimeProvider, WorkspaceHandle
+
+    killed: list[int] = []
+    monkeypatch.setattr("os.kill", lambda pid, sig: killed.append(pid))
+    provider = LocalProcessRuntimeProvider()
+
+    monkeypatch.setattr(provider, "_is_our_gym", staticmethod(lambda pid: False))
+    provider.terminate(WorkspaceHandle(endpoint="", external_ref="4242", runtime_kind="local_process"))
+    assert killed == [], "a pid we cannot prove is ours must be left alone"
+
+    monkeypatch.setattr(provider, "_is_our_gym", staticmethod(lambda pid: True))
+    provider.terminate(WorkspaceHandle(endpoint="", external_ref="4242", runtime_kind="local_process"))
+    assert killed == [4242], "…and a verified one is still reclaimed"
+
+
+def test_an_unreadable_process_answers_no(monkeypatch):
+    """Refusing when we cannot tell is the whole point: a leaked gym costs memory
+    and is recoverable, killing somebody else's process is not."""
+    from app.workspace.provider import LocalProcessRuntimeProvider
+
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: (_ for _ in ()).throw(OSError("no ps")))
+    assert LocalProcessRuntimeProvider._is_our_gym(4242) is False
+
+
+def test_only_a_gym_command_line_counts(monkeypatch):
+    from app.workspace.provider import LocalProcessRuntimeProvider
+
+    class Out:
+        def __init__(self, s): self.stdout = s
+
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: Out("python -m uvicorn server.main:app --port 9001"))
+    assert LocalProcessRuntimeProvider._is_our_gym(4242) is True
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: Out("/usr/bin/postgres -D /data"))
+    assert LocalProcessRuntimeProvider._is_our_gym(4242) is False

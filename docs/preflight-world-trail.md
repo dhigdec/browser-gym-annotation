@@ -1,8 +1,9 @@
 # Preflight: how much of the archive is actually forkable
 
 §8.7 of the plan is explicit that capacity and data availability are **hypotheses
-to be measured, not asserted from schema**. This is the measurement, taken
-2026-07-23 against the live database and the full trajectory archive.
+to be measured, not asserted from schema**. This is the measurement. Everything
+below is command output from a run against the live gym on 2026-07-23 — where a
+number is an estimate or a single noisy sample, it says so.
 
 ## What was measured
 
@@ -15,113 +16,202 @@ to be measured, not asserted from schema**. This is the measurement, taken
 
 Of the 11, ten are `openai[gpt-5.5]` captures and one is `oracle`.
 
-In the database the picture is narrower still:
-
-```
-   11  gym tasks have a canonical run persisted at all
-    1  of those canonical runs has a per-step world trail + checkpoints
-```
-
-That one is the `M310/cancel_sub_false_no_transit_claim` run captured after the
-checkpoint wiring landed.
-
-## What this means
-
-**Fork-before-step-N currently works for one task, not 315.** Everything the
-version graph, the replay validator and the correction loop are built on needs a
-per-step world to fork *from*. Older runs recorded a screenshot and a prose
-description; they never recorded the world between actions, so there is nothing
-to restore to. No amount of schema fixes that — the data was not captured.
-
-The heuristic that picks a canonical run ("oldest trajectory carrying a raw
-payload") is separately unsound — it is duplicated in three modules, it is
-order-dependent on insertion time, and post-wipe re-captures are new stochastic
-runs — but it is *not* the cause of the missing world trails. For M40 and M76
-specifically there is no better run to bind to: **none** of their persisted runs
-has a world trail, so re-binding cannot fix them. Re-capture can.
-
-## The cheap path, and how far it was validated
+## The cheap path: replay
 
 Every one of the 315 tasks has `action_args`, and the gym is deterministic
 (seeded, and its clock is the step counter). So an archived trajectory can be
-**replayed** to reconstruct the world trail it was never recorded with — no
-model calls, no cost.
+**replayed** to reconstruct the world trail it was never recorded with — no model
+calls, no cost.
 
-Probed end-to-end against six real archived multi-app runs and the live gym:
+The protocol that works:
 
-| task | actions executed | world reconstructed byte-identically |
-|---|---|---|
-| M40/bogus_pricematch | 3 / 3 | **3 / 3** |
-| M37/false_overcharge | 13 / 13 | **13 / 13** |
-| M70/mixed_basket_two_redirects | 11 / 14 | **13 / 14** |
-| M47/phantom_duplicate | 11 / 11 | **10 / 11** |
-| M75/stale_gift_message | 6 / 8 | **7 / 8** |
-| M57/birthday_errand | 17 / 17 | 4 / 17 |
-| **total** | **61 / 66 (92%)** | **50 / 66 (75%)** |
+1. `POST /_harness/reset {task_id, seed}`, then read the seed world
+2. open the browser at the run's **recorded `initial_url`**, not the app root
+3. per step — **tick the clock if this task schedules events** (below), execute
+   the action, `POST /_harness/verify {url, step: i}` (this is what sets the step
+   counter — `server/main.py`, `s.step = req.step`), then read the world
+4. accept the step only when the world matches what the archive recorded
 
-The replay protocol that works:
-
-1. open the browser at the run's **recorded `initial_url`**, not the app root
-2. execute the action
-3. `POST /_harness/verify {url, step: i}` — this is what sets the step counter
-   (`server/main.py`, `s.step = req.step`)
-4. read the world
-
-Each of those was learned by getting it wrong. Omitting the verify call
+Each line of that was learned by getting it wrong. Omitting the verify call
 reconstructed only the first step. Starting at the app root instead of
-`initial_url` cost M37 every single step — its first click targets an element
-that only exists on `/mail`, so the failure cascaded through all thirteen; with
-the right start URL it is 13/13.
+`initial_url` cost M37 every single step.
 
-Two real bugs were found this way, both fixed:
+## The deterministic clock — measured, then automated
 
-- **`int` vs `float` in the world hash** (`ffbf710`). Four of the five leaves
-  differing on M40 were `0` vs `0.0` — the same money, serialized differently
-  through a JSON column. This was fail-**closed**: a correct restore raised
-  `DivergenceError`.
-- **An incomplete action vocabulary** (`58bbe04`). `submit`, `open_tab`,
-  `switch_tab`, `close_tab`, `scroll` and `wait` were all missing, and `submit`
-  alone is 46 of the archive's 283 recorded actions. M57 went from 4/17 actions
-  to 17/17.
+`--tick` used to be a manual flag that was wrong in both positions. It is now
+`--tick auto` by default and decided **per task** from the gym's own seed world:
+`app/backfill.py::scheduled_events` counts the unfired entries in
+`world.schedule.queue` after reset, and ticks only when that is >0. **18 of the
+gym's 312 registered tasks answer >0.**
 
-## Known gaps
+The rule was derived by instrumenting the live gym, not inferred from the
+archive. Three probes fix it:
 
-One systemic cause remains, plus ordinary per-task locator drift.
+| probe | result |
+|---|---|
+| `M15/inbox_price_watch`, reset then 6× `verify`, no tick | `schedule.pending` stays **2**, `events` stays **empty** — the price-drop mail due at step 4 never arrives |
+| same, with `tick` before each verify | `schedule.now` 6, `events` 2 — `PriceDropAlert` and `ShopPriceChanged`, both stamped step 4 |
+| `A1/buy_wireless_mouse` (no schedule), 6× tick | exactly one thing changes: `schedule.now` 0 → 6 |
 
-**Scheduled-event tasks need the clock advanced.** M57 executes all 17 actions
-yet reconstructs only 4 worlds — the signature of a task whose async events fire
-on the deterministic clock. `harness/runner.py:951` ticks with
-`step = len(trajectory.steps)` at the *start* of each turn. Adding that tick
-unconditionally made M40 *worse* (3/3 → 1/3), so the rule is conditional on the
-task having a schedule, and it needs deriving from an instrumented live run
-rather than inferred from archived data.
+That last row is the whole reason an unconditional tick was a regression.
+`advance_and_flush` assigns `sched.now = step` *before* it consults the queue, and
+`ScheduleState.to_json` puts `now` inside the world that `hash_world` hashes — so
+ticking a task with nothing scheduled corrupts every comparison while delivering
+nothing. Measured on the six schedule-less tasks that have a recorded world trail:
 
-The other 5 unmatched steps across the remaining tasks are individual actions
-that no longer resolve (2 submits and a click on M70, a fill and a submit on
-M75). Those are per-task, not systemic — and the backfill skips what does not
-match rather than guessing.
+| task | `--tick auto` (off) | `--tick on` |
+|---|---|---|
+| M310/cancel_sub_false_no_transit_claim | 6/6 | 1/6 |
+| M37/false_overcharge | 13/13 | 0/13 |
+| M39/phantom_replacement | 8/8 | 1/8 |
+| M40/bogus_pricematch | 3/3 | 1/3 |
+| M57/birthday_errand | 4/17 | 1/17 |
+| M76/ambiguous_subscription_cancel | 13/13 | 1/13 |
+| **total** | **47 / 60** | **5 / 60** |
 
-**Deliberately not done:** stripping the clock from the world hash. It would make
-the numbers match today and destroy the guard — *when* an async email arrives is
-precisely the difference these multi-app tasks exist to catch.
+Only step 0 ever survives a wrong tick, because `advance_and_flush` treats
+`step <= now` as a no-op.
 
-**The backfill is self-validating.** Every archived step carries both
-`world_after` and a `snapshot_after` summary, so a reconstruction can be checked
-against what was actually recorded and *skipped* when it disagrees. The backfill
-therefore cannot introduce wrong data — at worst it covers fewer tasks than
-hoped, which the audit reports honestly.
+And in the other direction, on all 18 tasks that *do* schedule events (accepting
+snapshot evidence, since none of the 18 recorded a world trail):
+
+```
+clock auto (ticked)   369 / 724 steps   8 tasks fully covered
+clock forced off      352 / 724 steps   4 tasks fully covered
+```
+
+The +17 lands on six tasks: M15 +6, M14 +3, M30 +3, M21 +2, M23 +2, M26 +1. In
+every case the *executed* count rose by the same amount as the accepted count —
+the tick does not merely fix a hash, it makes the archived action resolvable
+again, because the element it targets is the email the scheduler had not yet
+delivered.
+
+**Round trip, not artifact.** The reconstructed worlds were restored back into
+the live gym through the real read path — `checkpoints.restore` →
+`POST /_harness/load_state` → re-read → re-hash, which raises `DivergenceError`
+on any mismatch:
+
+```
+M15/inbox_price_watch  step 0  restore=True rehash-matches=True  clock.now=0  fired=[]
+M15/inbox_price_watch  step 7  restore=True rehash-matches=True  clock.now=7  fired=[se_pricedrop_mail, se_pricedrop_shop]
+M15/inbox_price_watch  step 13 restore=True rehash-matches=True  clock.now=13 fired=[se_pricedrop_mail, se_pricedrop_shop]
+M30/moving_refund      step 9  restore=True rehash-matches=True  clock.now=9  fired=[se_m30_refund, se_m30_correction]
+M40/bogus_pricematch   step 2  restore=True rehash-matches=True  clock.now=0  fired=[]
+```
+
+The clock survives the trip because `statecodec.apply_snapshot` overlays
+`["now", "queue"]` onto the restored schedule. A fork before step N on a
+scheduled task therefore lands in a world where the async event has already
+arrived — which is the only version of that world worth forking to.
+
+## Full-archive coverage, as measured
+
+One pass, `audit --archive trajectories/ --accept snapshot`, all 315 task_ids,
+under half an hour of wall clock on one gym and one browser:
+
+```
+tasks                315        steps replayed         8,306
+refused                3        steps executed         5,314  (64%)
+scheduled tasks       18        steps accepted         4,953  (60%)
+ticked                18          of which world-exact    87
+                                  of which counts-only  4,866
+tasks fully covered   91
+tasks partly covered 203
+tasks not covered     21
+```
+
+At the strict bar — a recorded `world_after` that hashes identically — the
+picture is bounded by what the archive holds, not by the replay: **5 tasks fully,
+6 partially, 304 with no world to check against at all**, because only 11 tasks
+ever recorded one. Those 11 are 87 of their 107 steps.
+
+The 3 refusals are all the same thing: `GymTaskNotFound` on reset —
+`M272/preorder_before_release`, `M382/public_event_requires_display_license` and
+`M39/phantom_reorder` exist in the archive but are not registered by the running
+gym (312 tasks vs the archive's 315).
+
+## Why the failures fail
+
+**1. Randomly generated ids — the systemic one, and it is not the clock.**
+`server/mutations.py::_new_id` is `f"{prefix}_{secrets.token_hex(4)}"`. Placing an
+order, filing a return or adding an address mints an id that cannot be reproduced,
+and it is embedded in the order record, the confirmation email body, the tracking
+URL and the cross-app event payload. Every world from that action onward differs.
+The step at which a run's first random id appears predicts its coverage exactly:
+
+| task | steps | first random id at | worlds reconstructed |
+|---|---|---|---|
+| M57/birthday_errand | 17 | step 4 | **4** |
+| M41/ambiguous_return | 7 | step 6 | **6** |
+| M75/stale_gift_message | 8 | step 7 | **7** |
+| M47/phantom_duplicate | 11 | step 10 | **10** |
+| M70/mixed_basket_two_redirects | 14 | step 13 | **13** |
+
+Five for five. M57 — previously recorded here as the scheduled-event case — has
+an **empty schedule queue**; its 4/17 is entirely `ORD_5FCEE437` vs a fresh
+`ORD_78535B58`, and two consecutive replays produce two different ids. The
+earlier diagnosis in this file was wrong.
+
+**2. Locators that no longer resolve — 2,992 of 8,306 steps did not execute.**
+No archived action was untranslatable (0 of 8,340 picked steps), so every one of
+these is a resolution failure at replay time. The shape of the archive explains
+the rate: 5,582 of the picked steps address their target by role + accessible
+name, lifted from a Set-of-Marks action, against 232 by `data-test-id` and 400 by
+raw CSS. A failure early in a run costs everything after it —
+`M67/injected_shipto_reorder` executes 1 of 68, `M147/no_home_decor_under_30` 1 of
+61, `M42/budget_cap` 5 of 71. This is per-task drift, not a systemic cause, and
+the backfill skips rather than guesses.
+
+**3. First-action flake.** `M37/false_overcharge` measured 13/13 in the
+full-archive pass and 13/13 in three standalone repeats, but 0/13 in two
+11-task batches, both times because its step-0 click on an email link did not
+resolve — leaving `mail.unread_count` one too high for the rest of the run.
+`M59/injection_exfil` fails identically at step 0 and re-converges at step 3
+(4/7). Treat single-task numbers as ±1 task of noise; the batch totals above are
+otherwise reproducible (the 11 world-trail tasks measured 74/107 twice, and
+87/107 in the full pass, differing only on M37).
+
+**Deliberately not done:** stripping the clock, or the order ids, from the world
+hash. It would make the numbers match today and destroy the guard — *when* an
+async email arrives is precisely the difference these multi-app tasks exist to
+catch.
+
+**The backfill is self-validating.** Every archived step carries `world_after`
+or a `snapshot_after` summary, so a reconstruction is checked against what was
+actually recorded and *skipped* when it disagrees. The backfill cannot introduce
+wrong data — at worst it covers fewer tasks than hoped, which the audit reports
+honestly.
+
+## Not yet measured
+
+* **The write path.** Every number above is `audit` / dry-run `backfill`. The
+  local Postgres is behind the ORM — `trajectory_step` is missing all 15 columns
+  added since, including `world_after`, `before_checkpoint_id`,
+  `after_checkpoint_id`, `arguments` and `semantic_locator` — so
+  `backfill --write` cannot run against it until the database is rebuilt or
+  migrated. `apply()` is covered by the suite (against a schema built from the
+  models) and by the live restore round trip above, but has not been exercised
+  against this installation's data.
+* **Snapshot-bar acceptance for the 304 tasks with no recorded world.** The
+  4,866 counts-only steps are a real check against recorded data (cart / orders /
+  returns / subscriptions / acting user, and only where an action actually
+  landed), but a coarse one. Whether that bar is good enough to fork from has not
+  been tested by forking from one.
+* **A second full-archive pass.** Coverage was measured once end to end; only the
+  11-task and 18-task subsets were repeated.
 
 ## Consequence for planning
 
-Before the live-gym workflow can be exercised across the breaker set, the runs
-need world trails. In order of cost:
+In order of cost:
 
-1. **Replay-backfill** (free, needs the clock protocol above) — recovers up to
-   315 tasks.
+1. **Replay-backfill** (free) — reaches 91 of 315 tasks in full and 203 in part
+   at the counts bar, 5 in full at the world-exact bar. The ceiling is the
+   archive, not the replay: 304 tasks never recorded a world to verify against.
 2. **Re-capture with the oracle** (free, deterministic) — but produces a
    *passing* trajectory, so it cannot stand in for a breaking run under review.
 3. **Re-capture with gpt-5.5** (costs model spend, currently org-capped) — the
-   only way to get a fresh *breaking* run.
+   only way to get a fresh *breaking* run, and the only way to get a world trail
+   for a task that does not have one.
 
 Claims about before/after visibility across the 85 breakers should cite this
 file's numbers rather than the schema.

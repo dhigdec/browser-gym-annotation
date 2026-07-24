@@ -4,6 +4,7 @@ import {
   buildLineage,
   createFork,
   ensureBaseline,
+  fetchRuns,
   fetchVersionGraph,
   headOf,
   KIND_LABEL,
@@ -32,6 +33,115 @@ const STATUS_TONE: Record<VersionStatus, { fg: string; label: string }> = {
   rejected: { fg: t.redDark, label: "rejected" },
   published: { fg: t.primary6, label: "published" },
 };
+
+/** The sentence an annotator needs the moment the cap stops them. The server
+ *  says the same thing in its refusal (backend/app/agent_runs.py `EXHAUSTED`);
+ *  a cap that only says no leaves them with no way to finish the attempt. */
+export const MANUAL_FALLBACK =
+  "Finish this attempt by hand: reject the step you disagree with, then commit your own actions on that branch — each one is replay-validated before it is kept.";
+
+export interface RunBudget {
+  cap: number;
+  /** Runs the annotator can still start. */
+  left: number;
+  /** Started but not yet landed — already reserved against the cap. */
+  reserved: number;
+  /** Failures our side owned, which were given back. */
+  refunded: number;
+}
+
+/**
+ * What is left to spend, counted the way the server counts it.
+ *
+ * `runsLeft` only knows about runs that have LANDED, because that is all the
+ * attempt's counter holds. A queued or running job has already reserved its run
+ * (backend/app/agent_runs.py, `spent`), so a number that ignored those would
+ * promise a run the very next click is refused — and being refused against a
+ * number you were just shown is exactly how a cap loses an annotator's trust.
+ */
+export function runBudget(runs: RunsData | null | undefined): RunBudget | null {
+  const landed = runsLeft(runs ?? null);
+  if (!runs || runs.cap == null || landed == null) return null;
+  const reserved = runs.runs.filter((r) => r.countsAgainstCap && (r.status === "queued" || r.status === "running")).length;
+  const refunded = runs.runs.filter((r) => r.status === "error" && !r.countsAgainstCap).length;
+  return { cap: runs.cap, left: Math.max(0, landed - reserved), reserved, refunded };
+}
+
+/**
+ * The attempt's run budget, read from the server.
+ *
+ * Sourced from the graph's own attempt id rather than handed down as a prop: the
+ * panel is mounted (TaskReview's `LineagePanel`) without a runs payload, and a
+ * budget that appears only when some parent remembers to pass one is a budget
+ * nobody ever reads. It has to be on screen BEFORE a run is spent.
+ *
+ * `changed` re-reads it when the lineage moves, because a landed run arrives as
+ * a new candidate version and has just changed the count.
+ */
+export function useAgentRuns(attemptId: string | null, changed?: unknown): RunsData | null {
+  const [runs, setRuns] = useState<RunsData | null>(null);
+  useEffect(() => {
+    if (!attemptId) {
+      setRuns(null);
+      return;
+    }
+    let live = true;
+    // A failed read leaves the last known number standing. Blanking it would
+    // read as "no cap" on a capped attempt, which is the one wrong answer here.
+    void fetchRuns(attemptId).then((res) => {
+      if (live && res.ok) setRuns(res.value);
+    });
+    return () => {
+      live = false;
+    };
+  }, [attemptId, changed]);
+  return runs;
+}
+
+/** The budget, spelled out. Every line here exists because the annotator has to
+ *  be able to act on the number: what is left, what is already committed, what
+ *  we gave back, and what to do when there is nothing left. */
+function RunBudgetPanel({ budget }: { budget: RunBudget }) {
+  const out = budget.left === 0;
+  const line = { fontSize: "0.6875rem", lineHeight: 1.45, color: t.n2 } as const;
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+        padding: "10px 16px",
+        borderBottom: `1px solid ${t.n7}`,
+        background: out ? tint(t.yellow, 14) : t.n85,
+      }}
+    >
+      <span style={{ fontSize: "0.719rem", fontWeight: weight.bold, color: out ? t.yellowDark : t.n1 }}>
+        {out
+          ? `No agent runs left — all ${budget.cap} are spent`
+          : `${budget.left} of ${budget.cap} agent ${budget.cap === 1 ? "run" : "runs"} left`}
+      </span>
+      {budget.reserved > 0 && (
+        <span style={line}>
+          {budget.reserved} {budget.reserved === 1 ? "run is" : "runs are"} still going and already counted, so this
+          number cannot offer you a run that would then be refused.
+        </span>
+      )}
+      {budget.refunded > 0 && (
+        <span style={line}>
+          {budget.refunded} {budget.refunded === 1 ? "run" : "runs"} failed on our side and{" "}
+          {budget.refunded === 1 ? "was" : "were"} not counted.
+        </span>
+      )}
+      <span style={{ ...line, color: out ? t.n1 : t.n3, fontWeight: out ? weight.medium : weight.regular }}>
+        {out
+          ? MANUAL_FALLBACK
+          : budget.left === 1
+            ? "This is the last one. After it, the attempt is finished by hand."
+            : "Counted per attempt — branching does not start a new budget."}
+      </span>
+    </div>
+  );
+}
 
 function StatusChip({ status }: { status: VersionStatus }) {
   const tone = STATUS_TONE[status] ?? STATUS_TONE.candidate;
@@ -125,7 +235,10 @@ export function VersionGraph({
 }) {
   const rows = graph ? buildLineage(graph.versions) : [];
   const head = headOf(graph);
-  const left = runsLeft(runs ?? null);
+  // Read here when the caller does not hold it, so the number is on screen at
+  // the mount the app actually renders rather than only where a test passes it.
+  const sourced = useAgentRuns(runs ? null : graph?.attemptId ?? null, graph?.versions.length);
+  const budget = runBudget(runs ?? sourced);
   // The payload carries the fork POINT but not the fork MODE, so a row can name
   // the version it branched from and must not claim which step it rejected.
   const numberOf = new Map((graph?.versions ?? []).map((v) => [v.id, v.versionNo]));
@@ -138,9 +251,11 @@ export function VersionGraph({
         </span>
         <span style={{ fontFamily: t.fontMono, fontSize: "0.6875rem", color: t.n3 }}>
           {head ? `head v${head.versionNo}` : "no head yet"}
-          {left != null ? ` · ${left} agent ${left === 1 ? "run" : "runs"} left` : ""}
+          {budget ? ` · ${budget.left}/${budget.cap} runs` : ""}
         </span>
       </div>
+
+      {budget && <RunBudgetPanel budget={budget} />}
 
       {notice && <MovedOnNotice notice={notice} onDismiss={onDismissNotice} />}
 
