@@ -19,6 +19,7 @@ from app import (
     agent_runs, canonical, checkpoints, finalize, gym_client, jobs, models, recorder, replay, versions,
     workspace,
 )
+from app.api import live as live_api
 from app.api.sessions import _assert_not_submitted, _owned_session
 from app.auth import current_annotator
 from app.config import settings
@@ -275,8 +276,17 @@ def finalize_attempt(
 
     task = db.get(models.Task, s.task_id)
     endpoint = workspace.endpoint_for(db, s.id)
+    # Finalization REPLAYS the trajectory, so it needs a real browser. This used to
+    # fabricate a session id with an empty ticket, which the service has never
+    # heard of — so every finalize failed "live browser unreachable" and nothing
+    # could ship at all. Open one for the duration and always give it back.
+    start_url = live_api.browser_visible_gym_url(endpoint.base_url)
+    try:
+        live_sid, live_ticket = live_api.open_scratch_browser(start_url, current.email)
+    except HTTPException:
+        raise
     live = gym_client.LiveBrowserClient(
-        base_url=settings.live_browser_url, session_id=f"finalize-{s.id}", ticket="", gym=endpoint,
+        base_url=settings.live_browser_url, session_id=live_sid, ticket=live_ticket, gym=endpoint,
     )
     try:
         out = finalize.finalize(
@@ -294,6 +304,8 @@ def finalize_attempt(
     except versions.ConcurrencyError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        live_api.close_scratch_browser(live_sid)
 
     db.add(models.AuditLog(
         session_id=s.id, actor=current.email, action="attempt.finalize", target=out["submissionId"],

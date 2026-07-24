@@ -11,7 +11,7 @@ from uuid import UUID as _UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import agent, canonical, checkpoints, gym_client, gym_review, jobs, models, verify, workspace
+from app import agent, canonical, checkpoints, gym_client, gym_review, jobs, models, recorder, verify, workspace
 from app.config import settings
 from app.auth import current_annotator
 from app.db import SessionLocal, get_db
@@ -150,6 +150,13 @@ def _persist_gym_review(db: Session, task_id: str, agent: str, run: dict, review
             reasoning=(raw.get("reasoning") or "").strip(),
             actor="agent",
             arguments=raw.get("action_args") or {},
+            # Derive the replayable locator from the recorded selector. Missing it
+            # makes the step unreplayable, and finalize refuses the whole
+            # trajectory rather than replaying a shortened one — so without this
+            # NO canonical gym run could ever ship, which is every breaker in the
+            # set. The same omission was fixed in agent_runs.complete(); this is
+            # the other half of the same write path.
+            semantic_locator=recorder.locator_from_selector((raw.get("action_args") or {}).get("selector", "")),
             world_after=raw.get("world_after") or None,
             before_checkpoint_id=prev_cp.id if prev_cp is not None else None,
             after_checkpoint_id=after_cp.id if after_cp is not None else None,

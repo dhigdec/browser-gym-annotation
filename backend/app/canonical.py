@@ -373,10 +373,16 @@ def _cli(argv: list[str] | None = None) -> int:
             print(f"unknown annotator {args.actor!r}")
             return 2
         if args.best:
-            pick = next((pair[0] for pair in candidates(db, task.id) if _forkable(pair[1])), None)
-            if pick is None:
+            # MOST COMPLETE, not merely first-forkable. `candidates` is ordered for
+            # canonical IDENTITY (earliest wins), so taking the first forkable one
+            # hands back the oldest usable run — which on a task being REPAIRED is
+            # very likely the thin one that needed repairing. An operator typing
+            # --best is asking for the run with the most evidence.
+            usable = [(t, e) for t, e in candidates(db, task.id) if _forkable(e)]
+            if not usable:
                 print("no candidate with a world trail — nothing safe to bind")
                 return 1
+            pick = max(usable, key=lambda pair: (pair[1]["worldSteps"], pair[1]["trail"], pair[1]["steps"]))[0]
         else:
             if not args.trajectory:
                 print("pass --trajectory <uuid> or --best")

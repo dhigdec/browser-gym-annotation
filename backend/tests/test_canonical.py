@@ -393,3 +393,50 @@ def test_the_audit_survives_a_binder_who_no_longer_exists(db_session):
 
     row = next(r for r in canonical.audit(db_session)["tasks"] if r["taskId"] == tid)
     assert row["bound"] is True and row["boundBy"] is None
+
+
+def test_a_persisted_gym_run_carries_replayable_locators(db_session):
+    """Without a locator a step cannot be replayed, and finalize refuses the whole
+    trajectory rather than replaying a shortened one — so a canonical run with no
+    locators can never ship. That is EVERY breaker in the set.
+
+    Found by a full-platform smoke test, not by the suite: the same omission was
+    fixed once in agent_runs.complete() and missed here, in the path every
+    canonical run actually goes through."""
+    tid = "M40/locator_check"
+    traj = _persist(db_session, tid, world=True, at=1)
+    db_session.commit()
+
+    steps = db_session.scalars(
+        select(models.TrajectoryStep).where(models.TrajectoryStep.trajectory_id == traj.id)
+    ).all()
+    assert steps, "the fixture persisted no steps"
+    clickish = [s for s in steps if s.action_type not in ("navigate", "press", "wait")]
+    assert clickish, "the fixture has no locator-requiring steps to check"
+    assert all(s.semantic_locator for s in clickish), (
+        "a persisted gym step must carry a semantic locator or it is unreplayable"
+    )
+
+
+def test_bind_best_picks_the_most_complete_run_not_the_earliest(db_session):
+    """`candidates` is ordered for canonical IDENTITY — earliest wins — so taking
+    the first forkable one hands back the OLDEST usable run, which on a task being
+    repaired is likely the thin one that needed repairing. Measured live: --best
+    chose a 0/3 world trail over a 6/6. An operator typing --best is asking for
+    the run with the most evidence."""
+    from app.canonical import _forkable, candidates
+
+    tid = "M40/best_pick"
+    # The synthetic builder tops out at 3 steps, so ask for 1 vs 3 — a fixture
+    # whose two runs are actually identical would let this pass on a tie.
+    _persist(db_session, tid, world=True, steps=1, at=1)   # forkable but thin
+    rich = _persist(db_session, tid, world=True, steps=3, at=2)  # the complete one
+    db_session.commit()
+    task = _task(db_session, tid)
+
+    usable = [(t, e) for t, e in candidates(db_session, task.id) if _forkable(e)]
+    first_forkable = usable[0][0]
+    most_complete = max(usable, key=lambda p: (p[1]["worldSteps"], p[1]["trail"], p[1]["steps"]))[0]
+
+    assert first_forkable.id != rich.id, "the earliest-first ordering is what makes this a trap"
+    assert most_complete.id == rich.id, "--best must choose the run with the most evidence"

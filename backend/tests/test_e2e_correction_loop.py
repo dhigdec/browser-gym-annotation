@@ -123,6 +123,14 @@ def wired(monkeypatch):
     gym = FakeGym(browser)
     monkeypatch.setattr(vapi.workspace, "endpoint_for", lambda db, sid: gym)
     monkeypatch.setattr(vapi.gym_client, "LiveBrowserClient", lambda **kw: browser)
+    # Finalization opens a REAL browser for its replay. Stub that seam, and record
+    # the close, so the test still proves the scratch browser is given back — a
+    # finalize that leaked one per shipped sample would otherwise pass here.
+    closed: list[str] = []
+    monkeypatch.setattr(vapi.live_api, "open_scratch_browser", lambda url, owner: ("live-fin", "tk"))
+    monkeypatch.setattr(vapi.live_api, "close_scratch_browser", lambda sid: closed.append(sid))
+    monkeypatch.setattr(vapi.live_api, "browser_visible_gym_url", lambda base: base)
+    gym.closed_browsers = closed
     return browser, gym
 
 
@@ -220,6 +228,7 @@ def test_an_annotator_corrects_a_breaker_and_the_exported_sample_is_the_correcti
     assert fin.status_code == 200, fin.text
     out = fin.json()
     assert out["replayed"] is True and out["steps"] == 4, "2 inherited + 2 corrected, replayed whole"
+    assert gym.closed_browsers == ["live-fin"], "the scratch browser must be given back, not leaked"
     assert gym.resets, "finalization replays from a CLEAN reset, not a saved checkpoint"
     assert out["reward"] == 1, "the corrected run satisfies the suite"
 

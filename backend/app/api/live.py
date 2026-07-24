@@ -161,6 +161,30 @@ def _open_browser(url: str, owner: str) -> dict:
     return payload
 
 
+def browser_visible_gym_url(base_url: str) -> str:
+    """The gym URL as the BROWSER sees it — see _browser_visible."""
+    return _browser_visible(base_url)
+
+
+def open_scratch_browser(start_url: str, owner: str) -> tuple[str, str]:
+    """A short-lived browser for a server-side replay, returned as (id, ticket).
+
+    Finalization has to EXECUTE the trajectory, which needs a real browser — it
+    previously invented a session id and an empty ticket, so every finalize failed
+    with "live browser unreachable" and nothing could ever ship. Callers must
+    close_scratch_browser() in a finally, or each finalize leaks a Chromium.
+    """
+    opened = _open_browser(start_url, owner)
+    return opened["session_id"], opened["ticket"]
+
+
+def close_scratch_browser(live_session_id: str) -> None:
+    """Reclaim it. Never raises — a finalize that succeeded must not be reported
+    as failed because the teardown blipped."""
+    with contextlib.suppress(Exception):
+        _live_request("POST", f"/live/sessions/{live_session_id}/close", {}, timeout=10)
+
+
 def _browser_info(live_session_id: str) -> dict | None:
     """What the service still knows about this browser — None once it is gone."""
     status, payload = _live_request("GET", f"/live/sessions/{live_session_id}", timeout=10)
