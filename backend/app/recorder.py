@@ -219,3 +219,29 @@ def semantic_locator(target: dict | None) -> dict:
     if t.get("text"):
         loc["text"] = str(t["text"])[:120]
     return loc
+
+
+# A gym action records its target as a raw selector — "[data-test-id='btn-send']",
+# "#send", ".cart a". A committed step needs the semantic form, because that is
+# what the replayer resolves and what survives a layout change.
+_TEST_ID = re.compile(r"""\[data-test-id=['"]([^'"]+)['"]\]""")
+
+
+def locator_from_selector(selector: str) -> dict:
+    """Turn a recorded CSS selector into the semantic locator a replay speaks.
+
+    Agent runs carry `action_args.selector`, not a locator. Persisting the args
+    alone leaves the step unreplayable, and finalization refuses it — so an
+    agent-assisted correction could be created, selected and approved and then
+    could never actually ship. Preferring the test id keeps the durable handle
+    rather than the brittle path it happened to be written as.
+    """
+    sel = (selector or "").strip()
+    if not sel:
+        return {}
+    match = _TEST_ID.search(sel)
+    if match:
+        return {"testId": match.group(1)}
+    if sel.startswith("#") and " " not in sel:
+        return {"id": sel[1:]}
+    return {"css": sel}

@@ -22,7 +22,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import checkpoints, models, versions
+from app import checkpoints, models, recorder, versions
 
 QUEUED, RUNNING, DONE, ERROR = "queued", "running", "done", "error"
 
@@ -144,6 +144,12 @@ def complete(
             url_after=st.get("url_after") or st.get("url") or "",
             screenshot_url=st.get("image") or "",
             arguments=st.get("action_args") or {},
+            # Derive the locator from the recorded selector. Without it the step
+            # has no replayable target, finalization refuses the whole trajectory,
+            # and an agent-assisted correction can be created, selected and
+            # approved but never actually shipped — the platform's primary
+            # workflow, dead at the last gate.
+            semantic_locator=recorder.locator_from_selector((st.get("action_args") or {}).get("selector", "")),
             world_after=st.get("world_after") or None,
             before_checkpoint_id=prev_cp.id if prev_cp is not None else None,
             after_checkpoint_id=after_cp.id if after_cp is not None else None,

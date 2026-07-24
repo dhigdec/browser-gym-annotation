@@ -287,3 +287,103 @@ def test_a_correction_that_skips_a_step_is_refused_and_nothing_ships(client, bre
     assert r.status_code == 422
     assert db_session.query(models.TrajectoryStep).filter(models.TrajectoryStep.actor == "human").count() == 0
     assert db_session.query(models.Submission).count() == 0
+
+
+# --------------------------------------------------------------------------- the agent-assisted half
+def _inline_branch_job(monkeypatch, session_factory, gym, steps):
+    """Run the background branch job INLINE, against the same fake gym the rest of
+    the loop uses, so the agent's produced steps land in the real tables."""
+    import contextlib
+
+    from app.api import gym as gym_api
+
+    monkeypatch.setattr(vapi, "SessionLocal", session_factory)
+
+    class Worker:
+        base_url = "http://fake-branch-worker"
+
+        def resume_run(self, *a, **k):
+            return {"trajectory": {"steps": steps}}
+
+        def world(self):
+            return gym.world()
+
+    @contextlib.contextmanager
+    def workspace(_attempt_id):
+        yield Worker()
+
+    monkeypatch.setattr(gym_api, "_agent_workspace", workspace)
+
+    class Handle:
+        id = "bg-1"
+        status = "done"
+
+    monkeypatch.setattr(vapi.jobs.store, "submit", lambda name, fn, *args: (fn(*args), Handle())[1])
+
+
+def test_an_agent_assisted_correction_reaches_the_exported_sample(
+    client, breaker, wired, db_session, monkeypatch, _session_factory
+):
+    """The OTHER half of the loop. Every agent-run test stops at "a candidate was
+    created" — none follows it through selection, finalization and export, which is
+    exactly the gap that hid three bugs on the manual side. The reviewer's
+    instruction must survive all the way into the shipped sample as provenance,
+    and the rejected step must be absent from it."""
+    browser, gym = wired
+    sid = client.post(f"/api/tasks/{breaker.external_id}/sessions", json={}).json()["sessionId"]
+    v1 = client.post(f"/api/sessions/{sid}/versions/baseline").json()
+    steps = client.get(f"/api/sessions/{sid}/versions/{v1['id']}/steps").json()["steps"]
+    bad = steps[2]
+
+    # The agent, re-driven from the fork point under the reviewer's correction,
+    # checks transit and holds the order instead of claiming a refund.
+    _inline_branch_job(monkeypatch, _session_factory, gym, [
+        {"action_kind": "click", "description": "Check the transit status first",
+         # index 2 in the flattened trajectory, so the clock reads 2 — the same
+         # number /_harness/verify will set during the replay.
+         "url_after": "/orders/ORD-5290/transit", "world_after": {**_seed_world(), "step": 2},
+         "action_args": {"selector": "[data-test-id='link-transit']"}, "reasoning": "verify before promising"},
+        {"action_kind": "click", "description": "Hold the order pending transit",
+         "url_after": "/orders/ORD-5290", "action_args": {"selector": "[data-test-id='btn-hold']"}},
+    ])
+
+    correction = "check whether a replacement is already in transit before promising a refund"
+    r = client.post(f"/api/sessions/{sid}/versions/agent-run", json={
+        "parentVersionId": v1["id"], "stepId": bad["stepId"], "mode": "before",
+        "correction": correction, "idempotencyKey": "k1"})
+    assert r.status_code == 200, r.text
+    child_id = r.json()["versionId"]
+
+    # It is a CANDIDATE — the annotator selects it, the run never selects itself.
+    listing = client.get(f"/api/sessions/{sid}/versions").json()
+    assert listing["headVersionId"] is None, "a finished run must not select itself"
+    assert client.post(f"/api/sessions/{sid}/versions/select", json={
+        "versionId": child_id, "expectedRevision": listing["revision"]}).status_code == 200
+
+    flat = client.get(f"/api/sessions/{sid}/versions/{child_id}/steps").json()["steps"]
+    assert bad["stepId"] not in [s["stepId"] for s in flat], "the rejected step is gone"
+    assert [s["guidance"] for s in flat][-2:] == [correction, correction], \
+        "the reviewer's instruction is provenance on every step it produced"
+
+    # …and it ships.
+    suite = models.VerifierSuite(session_id=UUID(sid), version=1)
+    db_session.add(suite)
+    db_session.flush()
+    db_session.add(models.Verifier(suite_id=suite.id, ext_id="m0", level="backend",
+                                   assertion="the order is held pending transit", code=""))
+    db_session.commit()
+    rev = next(v for v in client.get(f"/api/sessions/{sid}/versions").json()["versions"] if v["id"] == child_id)
+    client.post(f"/api/sessions/{sid}/versions/{child_id}/status",
+                json={"status": "approved", "expectedRevision": rev["revision"]})
+
+    fin = client.post(f"/api/sessions/{sid}/finalize", json={"versionId": child_id, "suiteId": str(suite.id)})
+    assert fin.status_code == 200, fin.text
+
+    sample = build_sample(db_session, db_session.get(models.ReviewSession, UUID(sid)))
+    golden = sample["golden_trajectory"]
+    assert AGENT_RUN[2]["description"] not in [s["description"] for s in golden]
+    assert [s["actor"] for s in golden] == ["agent", "agent", "agent", "agent"], \
+        "an agent-corrected trajectory is agent all the way down — the human steered, they did not act"
+    assert golden[-1]["guidance"] == correction, "the steering ships with the sample it produced"
+    assert sample["trajectory_version"]["version_no"] == 2
+    assert client.get(f"/api/sessions/{sid}/runs").json()["agentCallCount"] == 1
